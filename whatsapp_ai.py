@@ -1,5 +1,25 @@
 import os
 import psycopg2
+
+DATABASE_URL = os.environ.get("DATABASE_URL")
+if not DATABASE_URL:
+    raise ValueError("DATABASE_URL not set in environment variables")
+
+DATABASE_URL = DATABASE_URL.strip()  # remove spaces/newlines
+
+try:
+    conn = psycopg2.connect(DATABASE_URL)
+    print("Database connected successfully!")
+except Exception as e:
+    raise RuntimeError(f"Could not connect to database: {e}")
+
+
+
+
+
+
+import os
+import psycopg2
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
 import requests
@@ -88,4 +108,5 @@ def whatsapp_reply():
 
 if __name__ == "__main__":
     app.run(debug=True)
+
 
