@@ -1,3 +1,10 @@
+import os
+import psycopg2
+
+# Connect to PostgreSQL
+conn = psycopg2.connect(os.environ.get("DATABASE_URL"))
+cur = conn.cursor()
+
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
 import os
@@ -48,3 +55,4 @@ def whatsapp_reply():
 # Entry point for gunicorn
 if __name__ == "__main__":
     app.run(debug=True)
+
