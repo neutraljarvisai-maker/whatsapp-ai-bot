@@ -1,115 +1,106 @@
 import os
 import psycopg2
-
-DATABASE_URL = os.environ.get("DATABASE_URL")
-if not DATABASE_URL:
-    raise ValueError("DATABASE_URL not set in environment variables")
-
-DATABASE_URL = DATABASE_URL.strip()  # remove spaces/newlines
-
-try:
-    conn = psycopg2.connect(DATABASE_URL)
-    print("Database connected successfully!")
-except Exception as e:
-    raise RuntimeError(f"Could not connect to database: {e}")
-
-
-import os
-print("DATABASE_URL is:", os.environ.get("DATABASE_URL"))
-
-
-
-
-import os
-import psycopg2
-from flask import Flask, request
-from twilio.twiml.messaging_response import MessagingResponse
+from flask import Flask, request, jsonify
 import requests
 
-# Connect to PostgreSQL
+# -----------------------------
+# CONFIG
+# -----------------------------
 DATABASE_URL = os.environ.get("DATABASE_URL")
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
+
 if not DATABASE_URL:
     raise ValueError("DATABASE_URL not set in environment variables")
-import os
-import psycopg2
+if not OPENROUTER_API_KEY:
+    raise ValueError("OPENROUTER_API_KEY not set in environment variables")
 
-# Get the DATABASE_URL from environment variables
-DATABASE_URL = os.environ.get("DATABASE_URL")
-if not DATABASE_URL:
-    raise ValueError("DATABASE_URL not set in environment variables")
+DATABASE_URL = DATABASE_URL.strip()
 
-# Try connecting to the database
+# -----------------------------
+# DATABASE SETUP
+# -----------------------------
 try:
     conn = psycopg2.connect(DATABASE_URL)
-    cur = conn.cursor()
+    conn.autocommit = True
+    cursor = conn.cursor()
+    # Create memory table if it doesn't exist
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS memory (
+            user_id TEXT PRIMARY KEY,
+            chat_history TEXT
+        )
+    """)
+    print("Connected to database successfully!")
 except Exception as e:
     raise RuntimeError(f"Could not connect to database: {e}")
 
-
-# Create Flask app
+# -----------------------------
+# FLASK APP
+# -----------------------------
 app = Flask(__name__)
 
-# Root route for testing
-@app.route("/")
-def home():
-    return "Bot is running!"
+# -----------------------------
+# HELPER FUNCTIONS
+# -----------------------------
+def get_memory(user_id):
+    cursor.execute("SELECT chat_history FROM memory WHERE user_id=%s", (user_id,))
+    row = cursor.fetchone()
+    if row:
+        return row[0]
+    return ""
 
-# Twilio WhatsApp webhook
-@app.route("/whatsapp", methods=["POST"])
-def whatsapp_reply():
-    incoming_msg = request.values.get('Body', '')
-    from_number = request.values.get('From', '')
+def update_memory(user_id, chat_history):
+    cursor.execute("""
+        INSERT INTO memory(user_id, chat_history)
+        VALUES (%s, %s)
+        ON CONFLICT (user_id) DO UPDATE
+        SET chat_history = EXCLUDED.chat_history
+    """, (user_id, chat_history))
 
-    # Save user message to DB
-    cur.execute(
-        "INSERT INTO messages (user_number, role, content) VALUES (%s, %s, %s)",
-        (from_number, 'user', incoming_msg)
-    )
-    conn.commit()
-
-    # Fetch last 10 messages for context
-    cur.execute(
-        "SELECT role, content FROM messages WHERE user_number=%s ORDER BY created_at ASC LIMIT 10",
-        (from_number,)
-    )
-    history = [{"role": row[0], "content": row[1]} for row in cur.fetchall()]
-
-    # Call OpenRouter API
-    OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
-    if not OPENROUTER_API_KEY:
-        return "OpenRouter API key not set", 500
-
-    url = "https://openrouter.ai/api/v1/chat/completions"
+def ask_openrouter(prompt):
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json"
     }
-    data = {
-        "model": "gpt-4o-mini",
-        "messages": history
+    payload = {
+        "model": "gpt-4.1-mini",
+        "input": prompt
     }
+    response = requests.post("https://api.openrouter.ai/v1/completions", json=payload, headers=headers)
+    response.raise_for_status()
+    data = response.json()
+    return data["output"][0]["content"]
 
-    try:
-        response = requests.post(url, json=data, headers=headers, timeout=15)
-        response.raise_for_status()
-        reply_text = response.json()["choices"][0]["message"]["content"]
-    except Exception as e:
-        reply_text = "Sorry, I couldn't process your message."
+# -----------------------------
+# WHATSAPP WEBHOOK
+# -----------------------------
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    data = request.json
 
-    # Save AI reply to DB
-    cur.execute(
-        "INSERT INTO messages (user_number, role, content) VALUES (%s, %s, %s)",
-        (from_number, 'assistant', reply_text)
-    )
-    conn.commit()
+    # Make sure you know how WhatsApp sends the message JSON
+    user_id = data["from"]           # sender's number
+    user_message = data["message"]   # the text message
 
-    # Respond to user
-    resp = MessagingResponse()
-    resp.message(reply_text)
-    return str(resp)
+    # Get previous chat history
+    chat_history = get_memory(user_id)
 
+    # Append new message
+    prompt = f"Chat history:\n{chat_history}\nUser: {user_message}\nAI:"
+    ai_response = ask_openrouter(prompt)
+
+    # Update memory
+    new_history = f"{chat_history}\nUser: {user_message}\nAI: {ai_response}"
+    update_memory(user_id, new_history)
+
+    # Respond to WhatsApp
+    # Your WhatsApp API sending depends on the provider (Twilio, Meta, etc.)
+    # Example: returning JSON for webhook handler
+    return jsonify({"reply": ai_response})
+
+# -----------------------------
+# RUN APP
+# -----------------------------
 if __name__ == "__main__":
-    app.run(debug=True)
-
-
-
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
