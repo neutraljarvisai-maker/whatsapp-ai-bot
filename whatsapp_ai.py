@@ -1,6 +1,7 @@
 import os
 import psycopg2
-from flask import Flask, request, jsonify
+from flask import Flask, request
+from twilio.twiml.messaging_response import MessagingResponse
 import requests
 
 # -----------------------------
@@ -23,7 +24,6 @@ try:
     conn = psycopg2.connect(DATABASE_URL)
     conn.autocommit = True
     cursor = conn.cursor()
-    # Create memory table if it doesn't exist
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS memory (
             user_id TEXT PRIMARY KEY,
@@ -45,9 +45,7 @@ app = Flask(__name__)
 def get_memory(user_id):
     cursor.execute("SELECT chat_history FROM memory WHERE user_id=%s", (user_id,))
     row = cursor.fetchone()
-    if row:
-        return row[0]
-    return ""
+    return row[0] if row else ""
 
 def update_memory(user_id, chat_history):
     cursor.execute("""
@@ -66,26 +64,34 @@ def ask_openrouter(prompt):
         "model": "gpt-4.1-mini",
         "input": prompt
     }
-    response = requests.post("https://api.openrouter.ai/v1/completions", json=payload, headers=headers)
-    response.raise_for_status()
-    data = response.json()
-    return data["output"][0]["content"]
+    try:
+        response = requests.post("https://api.openrouter.ai/v1/completions", json=payload, headers=headers, timeout=15)
+        response.raise_for_status()
+        data = response.json()
+        return data["output"][0]["content"]
+    except Exception as e:
+        print("OpenRouter API error:", e)
+        return "Sorry, I couldn't process that. Try again later."
 
 # -----------------------------
 # WHATSAPP WEBHOOK
 # -----------------------------
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    data = request.json
+    data = request.form
+    print("Incoming WhatsApp data:", data)
 
-    # Make sure you know how WhatsApp sends the message JSON
-    user_id = data["from"]           # sender's number
-    user_message = data["message"]   # the text message
+    user_id = data.get("From")
+    user_message = data.get("Body")
+
+    if not user_id or not user_message:
+        print("Invalid incoming message!")
+        return "OK", 200  # Twilio requires 200 response
 
     # Get previous chat history
     chat_history = get_memory(user_id)
 
-    # Append new message
+    # Build prompt for AI
     prompt = f"Chat history:\n{chat_history}\nUser: {user_message}\nAI:"
     ai_response = ask_openrouter(prompt)
 
@@ -94,9 +100,9 @@ def webhook():
     update_memory(user_id, new_history)
 
     # Respond to WhatsApp
-    # Your WhatsApp API sending depends on the provider (Twilio, Meta, etc.)
-    # Example: returning JSON for webhook handler
-    return jsonify({"reply": ai_response})
+    resp = MessagingResponse()
+    resp.message(ai_response)
+    return str(resp)
 
 # -----------------------------
 # RUN APP
