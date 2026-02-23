@@ -14,6 +14,8 @@ except Exception as e:
     raise RuntimeError(f"Could not connect to database: {e}")
 
 
+import os
+print("DATABASE_URL is:", os.environ.get("DATABASE_URL"))
 
 
 
@@ -108,5 +110,6 @@ def whatsapp_reply():
 
 if __name__ == "__main__":
     app.run(debug=True)
+
 
 
