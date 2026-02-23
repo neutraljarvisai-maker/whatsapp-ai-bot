@@ -1,4 +1,3 @@
-
 import os
 import psycopg2
 from flask import Flask, request
@@ -44,17 +43,24 @@ app = Flask(__name__)
 # HELPER FUNCTIONS
 # -----------------------------
 def get_memory(user_id):
-    cursor.execute("SELECT chat_history FROM memory WHERE user_id=%s", (user_id,))
-    row = cursor.fetchone()
-    return row[0] if row else ""
+    try:
+        cursor.execute("SELECT chat_history FROM memory WHERE user_id=%s", (user_id,))
+        row = cursor.fetchone()
+        return row[0] if row else ""
+    except Exception as e:
+        print(f"Database read error for user {user_id}: {e}")
+        return ""
 
 def update_memory(user_id, chat_history):
-    cursor.execute("""
-        INSERT INTO memory(user_id, chat_history)
-        VALUES (%s, %s)
-        ON CONFLICT (user_id) DO UPDATE
-        SET chat_history = EXCLUDED.chat_history
-    """, (user_id, chat_history))
+    try:
+        cursor.execute("""
+            INSERT INTO memory(user_id, chat_history)
+            VALUES (%s, %s)
+            ON CONFLICT (user_id) DO UPDATE
+            SET chat_history = EXCLUDED.chat_history
+        """, (user_id, chat_history))
+    except Exception as e:
+        print(f"Database update error for user {user_id}: {e}")
 
 def ask_openrouter(prompt):
     headers = {
@@ -66,9 +72,15 @@ def ask_openrouter(prompt):
         "input": prompt
     }
     try:
-        response = requests.post("https://api.openrouter.ai/v1/completions", json=payload, headers=headers, timeout=15)
+        response = requests.post(
+            "https://api.openrouter.ai/v1/completions",
+            json=payload,
+            headers=headers,
+            timeout=15
+        )
         response.raise_for_status()
         data = response.json()
+        print("OpenRouter response:", data)
         return data["output"][0]["content"]
     except Exception as e:
         print("OpenRouter API error:", e)
@@ -77,10 +89,10 @@ def ask_openrouter(prompt):
 # -----------------------------
 # WHATSAPP WEBHOOK
 # -----------------------------
-@app.route("/webhook", methods=["POST"])
-def webhook():
+@app.route("/whatsapp", methods=["POST"])
+def whatsapp_webhook():
     data = request.form
-    print("Incoming WhatsApp data:", data)
+    print("Webhook hit! Data received:", data)
 
     user_id = data.get("From")
     user_message = data.get("Body")
@@ -92,7 +104,7 @@ def webhook():
     # Get previous chat history
     chat_history = get_memory(user_id)
 
-    # Build prompt for AI
+    # Build prompt
     prompt = f"Chat history:\n{chat_history}\nUser: {user_message}\nAI:"
     ai_response = ask_openrouter(prompt)
 
@@ -111,5 +123,3 @@ def webhook():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
-
-
