@@ -8,8 +8,21 @@ import requests
 DATABASE_URL = os.environ.get("DATABASE_URL")
 if not DATABASE_URL:
     raise ValueError("DATABASE_URL not set in environment variables")
-conn = psycopg2.connect(DATABASE_URL)
-cur = conn.cursor()
+import os
+import psycopg2
+
+# Get the DATABASE_URL from environment variables
+DATABASE_URL = os.environ.get("DATABASE_URL")
+if not DATABASE_URL:
+    raise ValueError("DATABASE_URL not set in environment variables")
+
+# Try connecting to the database
+try:
+    conn = psycopg2.connect(DATABASE_URL)
+    cur = conn.cursor()
+except Exception as e:
+    raise RuntimeError(f"Could not connect to database: {e}")
+
 
 # Create Flask app
 app = Flask(__name__)
@@ -75,3 +88,4 @@ def whatsapp_reply():
 
 if __name__ == "__main__":
     app.run(debug=True)
+
