@@ -2,18 +2,18 @@ import os
 import psycopg2
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
-import requests
+from groq import Groq
 
 # -----------------------------
 # CONFIG
 # -----------------------------
 DATABASE_URL = os.environ.get("DATABASE_URL")
-OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
 if not DATABASE_URL:
     raise ValueError("DATABASE_URL not set in environment variables")
-if not OPENROUTER_API_KEY:
-    raise ValueError("OPENROUTER_API_KEY not set in environment variables")
+if not GROQ_API_KEY:
+    raise ValueError("GROQ_API_KEY not set in environment variables")
 
 DATABASE_URL = DATABASE_URL.strip()
 
@@ -35,6 +35,11 @@ except Exception as e:
     raise RuntimeError(f"Could not connect to database: {e}")
 
 # -----------------------------
+# GROQ CLIENT (Jarvis brain 🧠)
+# -----------------------------
+client = Groq(api_key=GROQ_API_KEY)
+
+# -----------------------------
 # FLASK APP
 # -----------------------------
 app = Flask(__name__)
@@ -44,12 +49,16 @@ app = Flask(__name__)
 # -----------------------------
 def get_memory(user_id):
     try:
-        cursor.execute("SELECT chat_history FROM memory WHERE user_id=%s", (user_id,))
+        cursor.execute(
+            "SELECT chat_history FROM memory WHERE user_id=%s",
+            (user_id,)
+        )
         row = cursor.fetchone()
         return row[0] if row else ""
     except Exception as e:
         print(f"Database read error for user {user_id}: {e}")
         return ""
+
 
 def update_memory(user_id, chat_history):
     try:
@@ -62,29 +71,29 @@ def update_memory(user_id, chat_history):
     except Exception as e:
         print(f"Database update error for user {user_id}: {e}")
 
-def ask_openrouter(prompt):
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "model": "gpt-4.1-mini",
-        "input": prompt
-    }
+
+def ask_groq(prompt):
     try:
-        response = requests.post(
-            "https://api.openrouter.ai/v1/completions",
-            json=payload,
-            headers=headers,
-            timeout=15
+        chat_completion = client.chat.completions.create(
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are Jarvis, a smart, helpful AI assistant."
+                },
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            model="llama-3.1-8b-instant"
         )
-        response.raise_for_status()
-        data = response.json()
-        print("OpenRouter response:", data)
-        return data["output"][0]["content"]
+
+        return chat_completion.choices[0].message.content
+
     except Exception as e:
-        print("OpenRouter API error:", e)
+        print("Groq API error:", e)
         return "Sorry, I couldn't process that. Try again later."
+
 
 # -----------------------------
 # WHATSAPP WEBHOOK
@@ -99,23 +108,25 @@ def whatsapp_webhook():
 
     if not user_id or not user_message:
         print("Invalid incoming message!")
-        return "OK", 200  # Twilio requires 200 response
+        return "OK", 200
 
     # Get previous chat history
     chat_history = get_memory(user_id)
 
-    # Build prompt
-    prompt = f"Chat history:\n{chat_history}\nUser: {user_message}\nAI:"
-    ai_response = ask_openrouter(prompt)
+    # Build prompt with memory
+    prompt = f"Chat history:\n{chat_history}\nUser: {user_message}\nJarvis:"
+
+    ai_response = ask_groq(prompt)
 
     # Update memory
-    new_history = f"{chat_history}\nUser: {user_message}\nAI: {ai_response}"
+    new_history = f"{chat_history}\nUser: {user_message}\nJarvis: {ai_response}"
     update_memory(user_id, new_history)
 
     # Respond to WhatsApp
     resp = MessagingResponse()
     resp.message(ai_response)
     return str(resp)
+
 
 # -----------------------------
 # RUN APP
