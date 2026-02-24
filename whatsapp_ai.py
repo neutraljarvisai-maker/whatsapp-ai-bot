@@ -16,7 +16,8 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 
-TWILIO_WHATSAPP_NUMBER = "whatsapp:+14155238886"  # Twilio sandbox
+TWILIO_WHATSAPP_NUMBER = "whatsapp:+14155238886"
+YOUR_NUMBER = "whatsapp:+917204595135"  # YOUR NUMBER
 
 if not DATABASE_URL:
     raise ValueError("DATABASE_URL not set")
@@ -28,29 +29,35 @@ DATABASE_URL = DATABASE_URL.strip()
 # -----------------------------
 # DATABASE SETUP
 # -----------------------------
-try:
-    conn = psycopg2.connect(DATABASE_URL)
-    conn.autocommit = True
-    cursor = conn.cursor()
+conn = psycopg2.connect(DATABASE_URL)
+conn.autocommit = True
+cursor = conn.cursor()
 
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS memory (
-            user_id TEXT PRIMARY KEY,
-            chat_history TEXT
-        )
-    """)
+cursor.execute("""
+    CREATE TABLE IF NOT EXISTS memory (
+        user_id TEXT PRIMARY KEY,
+        chat_history TEXT
+    )
+""")
 
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS profile_memory (
-            user_id TEXT PRIMARY KEY,
-            facts TEXT
-        )
-    """)
+cursor.execute("""
+    CREATE TABLE IF NOT EXISTS profile_memory (
+        user_id TEXT PRIMARY KEY,
+        facts TEXT
+    )
+""")
 
-    print("Connected to database successfully!")
+# ⭐ NEW — TASK STORAGE
+cursor.execute("""
+    CREATE TABLE IF NOT EXISTS tasks (
+        id SERIAL PRIMARY KEY,
+        user_id TEXT,
+        task TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+""")
 
-except Exception as e:
-    raise RuntimeError(f"Database error: {e}")
+print("Connected to database successfully!")
 
 # -----------------------------
 # CLIENTS
@@ -64,40 +71,83 @@ twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 app = Flask(__name__)
 
 # -----------------------------
-# 📩 SEND WHATSAPP MESSAGE
+# SEND WHATSAPP MESSAGE
 # -----------------------------
 def send_whatsapp_message(to_number, message):
-    try:
-        twilio_client.messages.create(
-            body=message,
-            from_=TWILIO_WHATSAPP_NUMBER,
-            to=to_number
-        )
-        print("Message sent successfully!")
-    except Exception as e:
-        print("Twilio send error:", e)
+    twilio_client.messages.create(
+        body=message,
+        from_=TWILIO_WHATSAPP_NUMBER,
+        to=to_number
+    )
 
 # -----------------------------
-# ⏰ JARVIS DAILY TASKS
+# TASK FUNCTIONS
+# -----------------------------
+def add_task(user_id, task):
+    cursor.execute(
+        "INSERT INTO tasks (user_id, task) VALUES (%s, %s)",
+        (user_id, task)
+    )
+
+def get_tasks(user_id):
+    cursor.execute(
+        "SELECT task FROM tasks WHERE user_id=%s ORDER BY created_at",
+        (user_id,)
+    )
+    rows = cursor.fetchall()
+
+    if not rows:
+        return "No tasks scheduled."
+
+    return "\n".join([f"• {r[0]}" for r in rows])
+
+# -----------------------------
+# AUTO TASK EXTRACTION
+# -----------------------------
+def extract_task_from_message(message):
+
+    prompt = f"""
+Determine if this message contains a task or responsibility.
+
+Message:
+{message}
+
+If YES → return ONLY the task in one short sentence.
+If NO → return NONE.
+"""
+
+    response = groq_client.chat.completions.create(
+        messages=[
+            {"role": "system", "content": "Extract tasks."},
+            {"role": "user", "content": prompt}
+        ],
+        model="llama-3.1-8b-instant"
+    )
+
+    return response.choices[0].message.content.strip()
+
+# -----------------------------
+# DAILY UPDATES
 # -----------------------------
 def jarvis_daily_updates():
 
     now = datetime.now()
-    hour = now.hour
-    minute = now.minute
 
     # 🌅 5 AM briefing
-    if hour == 5 and minute == 0:
+    if now.hour == 5 and now.minute == 0:
+
+        tasks = get_tasks(YOUR_NUMBER)
+
         send_whatsapp_message(
-            "whatsapp:+917204595135",  # 🔴 YOUR NUMBER
-            "🌅 Good morning. Here is your daily briefing."
+            YOUR_NUMBER,
+            f"🌅 Good morning.\n\n📋 Your tasks for today:\n{tasks}"
         )
 
-    # 🌙 10 PM updates
-    if hour == 22 and minute == 0:
+    # 🌙 10 PM update
+    if now.hour == 22 and now.minute == 0:
         send_whatsapp_message(
-            "whatsapp:+917204595135",  # 🔴 YOUR NUMBER
-            "🌙 Here are your nightly updates."
+            YOUR_NUMBER,
+            "🌙 Nightly update: All systems running."
         )
 
 # -----------------------------
@@ -110,7 +160,6 @@ def get_memory(user_id):
     )
     row = cursor.fetchone()
     return row[0] if row else ""
-
 
 def update_memory(user_id, chat_history):
     cursor.execute("""
@@ -131,7 +180,6 @@ def get_profile(user_id):
     row = cursor.fetchone()
     return row[0] if row else ""
 
-
 def update_profile(user_id, facts):
     cursor.execute("""
         INSERT INTO profile_memory(user_id, facts)
@@ -141,7 +189,7 @@ def update_profile(user_id, facts):
     """, (user_id, facts))
 
 # -----------------------------
-# 🧠 FACT EXTRACTION
+# FACT EXTRACTION
 # -----------------------------
 def extract_facts(old_facts, new_message):
 
@@ -152,9 +200,8 @@ Existing facts:
 User message:
 {new_message}
 
-Extract important personal facts (interests, goals, preferences).
+Extract important personal facts.
 Return short bullet points.
-If nothing new, return existing facts.
 """
 
     response = groq_client.chat.completions.create(
@@ -168,7 +215,7 @@ If nothing new, return existing facts.
     return response.choices[0].message.content
 
 # -----------------------------
-# 🤖 ASK GROQ
+# ASK GROQ
 # -----------------------------
 def ask_groq(prompt, profile_facts):
 
@@ -181,9 +228,6 @@ You are Jarvis, a calm, intelligent AI assistant.
 
 Known facts about the user:
 {profile_facts}
-
-Use them naturally.
-Speak professionally and helpfully.
 """
             },
             {"role": "user", "content": prompt}
@@ -194,14 +238,12 @@ Speak professionally and helpfully.
     return chat_completion.choices[0].message.content
 
 # -----------------------------
-# 📱 WHATSAPP WEBHOOK
+# WHATSAPP WEBHOOK
 # -----------------------------
 @app.route("/whatsapp", methods=["POST"])
 def whatsapp_webhook():
 
     data = request.form
-    print("Webhook hit:", data)
-
     user_id = data.get("From")
     user_message = data.get("Body")
 
@@ -211,11 +253,18 @@ def whatsapp_webhook():
     chat_history = get_memory(user_id)
     profile_facts = get_profile(user_id)
 
+    # 🧠 Learn facts
     updated_facts = extract_facts(profile_facts, user_message)
     update_profile(user_id, updated_facts)
 
-    prompt = f"Chat history:\n{chat_history}\nUser: {user_message}\nJarvis:"
+    # ⭐ Detect tasks automatically
+    task = extract_task_from_message(user_message)
 
+    if task and task.upper() != "NONE":
+        add_task(user_id, task)
+
+    # 🤖 AI response
+    prompt = f"Chat history:\n{chat_history}\nUser: {user_message}\nJarvis:"
     ai_response = ask_groq(prompt, updated_facts)
 
     new_history = f"{chat_history}\nUser: {user_message}\nJarvis: {ai_response}"
@@ -227,20 +276,15 @@ def whatsapp_webhook():
     return str(resp)
 
 # -----------------------------
-# 🧪 TEST ROUTE
+# TEST ROUTE
 # -----------------------------
 @app.route("/test-send")
 def test_send():
-
-    send_whatsapp_message(
-        "whatsapp:+917204595135",  # 🔴 YOUR NUMBER
-        "Jarvis online ✅"
-    )
-
+    send_whatsapp_message(YOUR_NUMBER, "Jarvis online ✅")
     return "Sent!"
 
 # -----------------------------
-# 🚀 START SCHEDULER
+# START SCHEDULER
 # -----------------------------
 scheduler = BackgroundScheduler()
 scheduler.add_job(jarvis_daily_updates, "interval", minutes=1)
