@@ -6,6 +6,9 @@ python-dotenv
 psycopg2-binary
 groq
 APScheduler
+pytesseract
+pillow
+
 
 
 
