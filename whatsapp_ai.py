@@ -2,6 +2,7 @@ import os
 import psycopg2
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
+from twilio.rest import Client
 from groq import Groq
 
 # -----------------------------
@@ -10,10 +11,15 @@ from groq import Groq
 DATABASE_URL = os.environ.get("DATABASE_URL")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
+TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
+TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
+
+TWILIO_WHATSAPP_NUMBER = "whatsapp:+14155238886"  # Twilio sandbox
+
 if not DATABASE_URL:
-    raise ValueError("DATABASE_URL not set in environment variables")
+    raise ValueError("DATABASE_URL not set")
 if not GROQ_API_KEY:
-    raise ValueError("GROQ_API_KEY not set in environment variables")
+    raise ValueError("GROQ_API_KEY not set")
 
 DATABASE_URL = DATABASE_URL.strip()
 
@@ -25,7 +31,6 @@ try:
     conn.autocommit = True
     cursor = conn.cursor()
 
-    # Chat history memory
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS memory (
             user_id TEXT PRIMARY KEY,
@@ -33,7 +38,6 @@ try:
         )
     """)
 
-    # 🧠 NEW: Personal profile memory
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS profile_memory (
             user_id TEXT PRIMARY KEY,
@@ -44,12 +48,13 @@ try:
     print("Connected to database successfully!")
 
 except Exception as e:
-    raise RuntimeError(f"Could not connect to database: {e}")
+    raise RuntimeError(f"Database error: {e}")
 
 # -----------------------------
-# GROQ CLIENT (Jarvis brain 🧠)
+# CLIENTS
 # -----------------------------
-client = Groq(api_key=GROQ_API_KEY)
+groq_client = Groq(api_key=GROQ_API_KEY)
+twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 
 # -----------------------------
 # FLASK APP
@@ -57,145 +62,136 @@ client = Groq(api_key=GROQ_API_KEY)
 app = Flask(__name__)
 
 # -----------------------------
+# 📩 SEND WHATSAPP MESSAGE (Jarvis proactive)
+# -----------------------------
+def send_whatsapp_message(to_number, message):
+    try:
+        twilio_client.messages.create(
+            body=message,
+            from_=TWILIO_WHATSAPP_NUMBER,
+            to=to_number
+        )
+        print("Message sent successfully!")
+    except Exception as e:
+        print("Twilio send error:", e)
+
+# -----------------------------
 # MEMORY FUNCTIONS
 # -----------------------------
 def get_memory(user_id):
-    try:
-        cursor.execute(
-            "SELECT chat_history FROM memory WHERE user_id=%s",
-            (user_id,)
-        )
-        row = cursor.fetchone()
-        return row[0] if row else ""
-    except Exception as e:
-        print(f"Database read error for user {user_id}: {e}")
-        return ""
+    cursor.execute(
+        "SELECT chat_history FROM memory WHERE user_id=%s",
+        (user_id,)
+    )
+    row = cursor.fetchone()
+    return row[0] if row else ""
 
 
 def update_memory(user_id, chat_history):
-    try:
-        cursor.execute("""
-            INSERT INTO memory(user_id, chat_history)
-            VALUES (%s, %s)
-            ON CONFLICT (user_id) DO UPDATE
-            SET chat_history = EXCLUDED.chat_history
-        """, (user_id, chat_history))
-    except Exception as e:
-        print(f"Database update error for user {user_id}: {e}")
+    cursor.execute("""
+        INSERT INTO memory(user_id, chat_history)
+        VALUES (%s, %s)
+        ON CONFLICT (user_id) DO UPDATE
+        SET chat_history = EXCLUDED.chat_history
+    """, (user_id, chat_history))
 
 
-# 🧠 PROFILE MEMORY FUNCTIONS
+# -----------------------------
+# PROFILE MEMORY
+# -----------------------------
 def get_profile(user_id):
-    try:
-        cursor.execute(
-            "SELECT facts FROM profile_memory WHERE user_id=%s",
-            (user_id,)
-        )
-        row = cursor.fetchone()
-        return row[0] if row else ""
-    except Exception as e:
-        print(f"Profile read error for user {user_id}: {e}")
-        return ""
+    cursor.execute(
+        "SELECT facts FROM profile_memory WHERE user_id=%s",
+        (user_id,)
+    )
+    row = cursor.fetchone()
+    return row[0] if row else ""
 
 
 def update_profile(user_id, facts):
-    try:
-        cursor.execute("""
-            INSERT INTO profile_memory(user_id, facts)
-            VALUES (%s, %s)
-            ON CONFLICT (user_id) DO UPDATE
-            SET facts = EXCLUDED.facts
-        """, (user_id, facts))
-    except Exception as e:
-        print(f"Profile update error for user {user_id}: {e}")
+    cursor.execute("""
+        INSERT INTO profile_memory(user_id, facts)
+        VALUES (%s, %s)
+        ON CONFLICT (user_id) DO UPDATE
+        SET facts = EXCLUDED.facts
+    """, (user_id, facts))
 
 
 # -----------------------------
-# GROQ FUNCTIONS
+# 🧠 FACT EXTRACTION
 # -----------------------------
 def extract_facts(old_facts, new_message):
-    """Jarvis learns important facts about the user"""
-    try:
-        prompt = f"""
-Existing facts about the user:
+
+    prompt = f"""
+Existing facts:
 {old_facts}
 
 User message:
 {new_message}
 
-Extract ONLY important personal facts (name, interests, goals, preferences, etc).
-Return updated facts as short bullet points.
-If nothing new, return the existing facts unchanged.
+Extract important personal facts (interests, goals, preferences).
+Return short bullet points.
+If nothing new, return existing facts.
 """
 
-        response = client.chat.completions.create(
-            messages=[
-                {"role": "system", "content": "You extract user facts."},
-                {"role": "user", "content": prompt}
-            ],
-            model="llama-3.1-8b-instant"
-        )
+    response = groq_client.chat.completions.create(
+        messages=[
+            {"role": "system", "content": "Extract user facts."},
+            {"role": "user", "content": prompt}
+        ],
+        model="llama-3.1-8b-instant"
+    )
 
-        return response.choices[0].message.content
-
-    except Exception as e:
-        print("Fact extraction error:", e)
-        return old_facts
+    return response.choices[0].message.content
 
 
+# -----------------------------
+# 🤖 ASK GROQ (Jarvis brain)
+# -----------------------------
 def ask_groq(prompt, profile_facts):
-    try:
-        chat_completion = client.chat.completions.create(
-            messages=[
-                {
-                    "role": "system",
-                    "content": f"""
+
+    chat_completion = groq_client.chat.completions.create(
+        messages=[
+            {
+                "role": "system",
+                "content": f"""
 You are Jarvis, a calm, intelligent AI assistant.
 
 Known facts about the user:
 {profile_facts}
 
-Use these facts naturally when helpful.
-Speak politely and professionally.
+Use them naturally.
+Speak professionally and helpfully.
 """
-                },
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ],
-            model="llama-3.1-8b-instant"
-        )
+            },
+            {"role": "user", "content": prompt}
+        ],
+        model="llama-3.1-8b-instant"
+    )
 
-        return chat_completion.choices[0].message.content
-
-    except Exception as e:
-        print("Groq API error:", e)
-        return "Sorry, I couldn't process that. Try again later."
+    return chat_completion.choices[0].message.content
 
 
 # -----------------------------
-# WHATSAPP WEBHOOK
+# 📱 WHATSAPP WEBHOOK (incoming)
 # -----------------------------
 @app.route("/whatsapp", methods=["POST"])
 def whatsapp_webhook():
+
     data = request.form
-    print("Webhook hit! Data received:", data)
+    print("Webhook hit:", data)
 
     user_id = data.get("From")
     user_message = data.get("Body")
 
     if not user_id or not user_message:
-        print("Invalid incoming message!")
         return "OK", 200
 
-    # 📜 Chat history
+    # Memory
     chat_history = get_memory(user_id)
-
-    # 🧠 Personal profile
     profile_facts = get_profile(user_id)
 
-    # 🧠 Learn new facts
+    # Learn about user
     updated_facts = extract_facts(profile_facts, user_message)
     update_profile(user_id, updated_facts)
 
@@ -204,14 +200,29 @@ def whatsapp_webhook():
 
     ai_response = ask_groq(prompt, updated_facts)
 
-    # Update chat history
+    # Save history
     new_history = f"{chat_history}\nUser: {user_message}\nJarvis: {ai_response}"
     update_memory(user_id, new_history)
 
-    # Respond to WhatsApp
+    # Reply
     resp = MessagingResponse()
     resp.message(ai_response)
+
     return str(resp)
+
+
+# -----------------------------
+# 🧪 TEST ROUTE — Jarvis sends YOU a message
+# -----------------------------
+@app.route("/test-send")
+def test_send():
+
+    send_whatsapp_message(
+        "whatsapp:+917204595135",  # PUT YOUR NUMBER HERE
+        "Jarvis online ✅"
+    )
+
+    return "Sent!"
 
 
 # -----------------------------
