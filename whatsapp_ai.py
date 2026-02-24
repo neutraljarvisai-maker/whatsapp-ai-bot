@@ -247,13 +247,15 @@ def whatsapp_webhook():
     interests = extract_interests(user_message)
     update_interests(user_id,interests)
 
-    # Keyword-based Google search
-    search_keywords = ["search","look up","find","tell me about"]
-    if any(k in user_message.lower() for k in search_keywords):
-        search_result = google_search(user_message)
-        resp = MessagingResponse()
-        resp.message(search_result)
-        return str(resp)
+    #Google keywords
+     search_keywords = ["search", "look up", "find", "tell me about"]
+    if any(user_message.lower().startswith(k) for k in search_keywords):
+    # Only trigger if message starts with a search keyword
+    search_result = google_search(user_message)
+    resp = MessagingResponse()
+    resp.message(search_result)
+    return str(resp)
+
 
     # AI response
     prompt = f"Chat history:\n{chat_history}\nUser: {user_message}\nJarvis:"
@@ -286,3 +288,4 @@ scheduler.start()
 if __name__=="__main__":
     port=int(os.environ.get("PORT",8080))
     app.run(host="0.0.0.0",port=port)
+
