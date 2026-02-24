@@ -29,7 +29,6 @@ if not YOUR_NUMBER:
 
 
 DATABASE_URL = DATABASE_URL.strip()
-
 # -----------------------------
 # DATABASE SETUP
 # -----------------------------
@@ -51,13 +50,13 @@ cursor.execute("""
     )
 """)
 
-# ⭐ NEW — TASK STORAGE
+# ⭐ NEW — Interest tracking
 cursor.execute("""
-    CREATE TABLE IF NOT EXISTS tasks (
-        id SERIAL PRIMARY KEY,
+    CREATE TABLE IF NOT EXISTS interests (
         user_id TEXT,
-        task TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        interest TEXT,
+        level INTEGER DEFAULT 1,
+        PRIMARY KEY (user_id, interest)
     )
 """)
 
@@ -300,4 +299,5 @@ scheduler.start()
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
+
 
