@@ -209,12 +209,27 @@ def google_search(query, num_results=3):
 # -----------------------------
 def jarvis_daily_updates():
     now = datetime.now()
+    
+    # 🌅 Morning briefing (5 AM)
     if now.hour == 5 and now.minute == 0:
+        # Tasks
         tasks = get_tasks(YOUR_NUMBER)
-        send_whatsapp_message(
-            YOUR_NUMBER,
-            f"🌅 Good morning.\n\n📋 Your tasks for today:\n{tasks}"
-        )
+        message = f"🌅 Good morning.\n\n📋 Your tasks for today:\n{tasks}\n\n"
+
+        # Fetch top interests
+        cursor.execute("SELECT interest, level FROM interests WHERE user_id=%s ORDER BY level DESC", (YOUR_NUMBER,))
+        interests = cursor.fetchall()
+
+        # For each interest, fetch a Google search summary
+        for interest, level in interests:
+            # Limit number of results based on level (1-4)
+            num_results = min(4, level)
+            search_result = google_search(f"{interest} news", num_results=num_results)
+            message += f"📰 Top {interest} news:\n{search_result}\n\n"
+
+        send_whatsapp_message(YOUR_NUMBER, message.strip())
+
+    # 🌙 Nightly update (10 PM)
     if now.hour == 22 and now.minute == 0:
         send_whatsapp_message(
             YOUR_NUMBER,
@@ -352,3 +367,4 @@ scheduler.start()
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
+
