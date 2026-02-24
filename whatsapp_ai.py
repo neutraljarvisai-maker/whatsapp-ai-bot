@@ -17,12 +17,16 @@ TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 
 TWILIO_WHATSAPP_NUMBER = "whatsapp:+14155238886"
-YOUR_NUMBER = "whatsapp:+917204595135"  # YOUR NUMBER
+YOUR_NUMBER = os.environ.get("YOUR_NUMBER")
+
 
 if not DATABASE_URL:
     raise ValueError("DATABASE_URL not set")
 if not GROQ_API_KEY:
     raise ValueError("GROQ_API_KEY not set")
+if not YOUR_NUMBER:
+    raise ValueError("YOUR_NUMBER not set")
+
 
 DATABASE_URL = DATABASE_URL.strip()
 
@@ -296,3 +300,4 @@ scheduler.start()
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
+
