@@ -10,7 +10,6 @@ import json
 import requests
 from PIL import Image
 import pytesseract
-import time
 
 # -----------------------------
 # CONFIG
@@ -27,7 +26,8 @@ GOOGLE_CSE_ID = os.environ.get("GOOGLE_CSE_ID")
 if not all([DATABASE_URL, GROQ_API_KEY, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, YOUR_NUMBER, GOOGLE_API_KEY, GOOGLE_CSE_ID]):
     raise ValueError("Please set all required environment variables!")
 
-DATABASE_URL = DATABASE_URL.strip()
+# On Railway Linux, Tesseract path
+pytesseract.pytesseract.tesseract_cmd = "/usr/bin/tesseract"
 
 # -----------------------------
 # DATABASE SETUP
@@ -96,7 +96,11 @@ def get_memory(user_id):
     return row[0] if row else ""
 
 def update_memory(user_id,chat_history):
-    cursor.execute("INSERT INTO memory(user_id,chat_history) VALUES (%s,%s) ON CONFLICT(user_id) DO UPDATE SET chat_history=EXCLUDED.chat_history",(user_id,chat_history))
+    cursor.execute(
+        "INSERT INTO memory(user_id,chat_history) VALUES (%s,%s) "
+        "ON CONFLICT(user_id) DO UPDATE SET chat_history=EXCLUDED.chat_history",
+        (user_id,chat_history)
+    )
 
 def get_profile(user_id):
     cursor.execute("SELECT facts FROM profile_memory WHERE user_id=%s",(user_id,))
@@ -104,16 +108,27 @@ def get_profile(user_id):
     return row[0] if row else ""
 
 def update_profile(user_id,facts):
-    cursor.execute("INSERT INTO profile_memory(user_id,facts) VALUES (%s,%s) ON CONFLICT(user_id) DO UPDATE SET facts=EXCLUDED.facts",(user_id,facts))
+    cursor.execute(
+        "INSERT INTO profile_memory(user_id,facts) VALUES (%s,%s) "
+        "ON CONFLICT(user_id) DO UPDATE SET facts=EXCLUDED.facts",
+        (user_id,facts)
+    )
 
 # -----------------------------
 # TASK MANAGEMENT
 # -----------------------------
 def add_task(user_id, description, max_attempts=3):
-    cursor.execute("INSERT INTO tasks(user_id,description,max_attempts) VALUES (%s,%s,%s)",(user_id,description,max_attempts))
+    cursor.execute(
+        "INSERT INTO tasks(user_id,description,max_attempts) VALUES (%s,%s,%s)",
+        (user_id,description,max_attempts)
+    )
 
 def get_pending_tasks(user_id):
-    cursor.execute("SELECT id, description, status, attempts, max_attempts, alternatives FROM tasks WHERE user_id=%s AND status='pending' ORDER BY created_at",(user_id,))
+    cursor.execute(
+        "SELECT id, description, status, attempts, max_attempts, alternatives FROM tasks "
+        "WHERE user_id=%s AND status='pending' ORDER BY created_at",
+        (user_id,)
+    )
     return cursor.fetchall()
 
 def mark_task_done(task_id):
@@ -210,7 +225,7 @@ def extract_task_from_message(message):
     return response.choices[0].message.content.strip()
 
 # -----------------------------
-# AUTONOMOUS PROBLEM SOLVING
+# AUTONOMOUS TASK SOLVING
 # -----------------------------
 def solve_task(task):
     task_id, description, status, attempts, max_attempts, alternatives_json = task
@@ -288,16 +303,15 @@ def whatsapp_webhook():
         return "OK",200
 
     # -----------------------------
-    # Step 1: Image OCR
+    # Image OCR
     # -----------------------------
     if media_url and media_type and media_type.startswith("image"):
         try:
-            img_path = "temp_image.jpg"
             resp = requests.get(media_url)
             if resp.status_code == 200:
-                with open(img_path,"wb") as f:
+                with open("temp_image.jpg","wb") as f:
                     f.write(resp.content)
-                ocr_text = pytesseract.image_to_string(Image.open(img_path)).strip()
+                ocr_text = pytesseract.image_to_string(Image.open("temp_image.jpg")).strip()
                 user_message += f"\n{ocr_text}"
         except Exception as e:
             send_whatsapp_message(user_id,f"⚠️ Could not process image: {e}")
@@ -321,7 +335,7 @@ def whatsapp_webhook():
     update_interests(user_id,interests)
 
     # -----------------------------
-    # Smart Keyword Search
+    # Keyword-based search fallback
     # -----------------------------
     search_keywords = ["search","look up","find","tell me about"]
     user_lower = user_message.lower().strip()
@@ -332,7 +346,7 @@ def whatsapp_webhook():
         return str(resp)
 
     # -----------------------------
-    # Default AI Response
+    # AI Response
     # -----------------------------
     prompt = f"Chat history:\n{chat_history}\nUser: {user_message}\nJarvis:"
     ai_response = ask_groq(prompt,updated_facts)
