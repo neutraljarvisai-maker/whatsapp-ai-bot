@@ -7,6 +7,7 @@ from groq import Groq
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime
 import json
+import requests
 
 # -----------------------------
 # CONFIG
@@ -20,12 +21,11 @@ TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 TWILIO_WHATSAPP_NUMBER = "whatsapp:+14155238886"
 YOUR_NUMBER = os.environ.get("YOUR_NUMBER")
 
-if not DATABASE_URL:
-    raise ValueError("DATABASE_URL not set")
-if not GROQ_API_KEY:
-    raise ValueError("GROQ_API_KEY not set")
-if not YOUR_NUMBER:
-    raise ValueError("YOUR_NUMBER not set")
+GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")  # Your Google API Key
+GOOGLE_CSE_ID = os.environ.get("GOOGLE_CSE_ID")    # Your Custom Search Engine ID
+
+if not DATABASE_URL or not GROQ_API_KEY or not YOUR_NUMBER or not GOOGLE_API_KEY or not GOOGLE_CSE_ID:
+    raise ValueError("Please set all required environment variables (DATABASE_URL, GROQ_API_KEY, YOUR_NUMBER, GOOGLE_API_KEY, GOOGLE_CSE_ID)")
 
 DATABASE_URL = DATABASE_URL.strip()
 
@@ -110,9 +110,6 @@ def get_tasks(user_id):
         return "No tasks scheduled."
     return "\n".join([f"• {r[0]}" for r in rows])
 
-# -----------------------------
-# AUTO TASK EXTRACTION
-# -----------------------------
 def extract_task_from_message(message):
     prompt = f"""
 Determine if this message contains a task or responsibility.
@@ -168,7 +165,7 @@ Message:
 def update_interests(user_id, interests):
     for item in interests:
         topic = item["topic"].capitalize()
-        level = max(1, min(4, item["level"]))  # Ensure 1-4
+        level = max(1, min(4, item["level"]))
         cursor.execute("SELECT level FROM interests WHERE user_id=%s AND interest=%s",
                        (user_id, topic))
         existing = cursor.fetchone()
@@ -179,6 +176,33 @@ def update_interests(user_id, interests):
         else:
             cursor.execute("INSERT INTO interests (user_id, interest, level) VALUES (%s, %s, %s)",
                            (user_id, topic, level))
+
+# -----------------------------
+# GOOGLE SEARCH FUNCTION
+# -----------------------------
+def google_search(query, num_results=3):
+    url = "https://www.googleapis.com/customsearch/v1"
+    params = {
+        "key": GOOGLE_API_KEY,
+        "cx": GOOGLE_CSE_ID,
+        "q": query,
+        "num": num_results
+    }
+    try:
+        response = requests.get(url, params=params)
+        data = response.json()
+        items = data.get("items", [])
+        if not items:
+            return "I couldn't find anything useful for that."
+        results_text = ""
+        for i, item in enumerate(items, 1):
+            title = item.get("title", "No title")
+            snippet = item.get("snippet", "")
+            link = item.get("link", "")
+            results_text += f"{i}. {title}\n{snippet}\n{link}\n\n"
+        return results_text.strip()
+    except Exception as e:
+        return f"Error fetching search results: {e}"
 
 # -----------------------------
 # DAILY UPDATES
@@ -283,9 +307,17 @@ def whatsapp_webhook():
     if task and task.upper() != "NONE":
         add_task(user_id, task)
 
-    # ⭐ Automatic Interest Learning
+    # Automatic Interest Learning
     interests = extract_interests(user_message)
     update_interests(user_id, interests)
+
+    # ⭐ Check if user wants a search
+    search_keywords = ["search", "look up", "find", "tell me about"]
+    if any(k in user_message.lower() for k in search_keywords):
+        search_result = google_search(user_message)
+        resp = MessagingResponse()
+        resp.message(search_result)
+        return str(resp)
 
     # AI Response
     prompt = f"Chat history:\n{chat_history}\nUser: {user_message}\nJarvis:"
