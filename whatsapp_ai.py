@@ -18,8 +18,8 @@ TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 TWILIO_WHATSAPP_NUMBER = "whatsapp:+14155238886"
 YOUR_NUMBER = os.environ.get("YOUR_NUMBER")
-GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")  # Google API Key
-GOOGLE_CSE_ID = os.environ.get("GOOGLE_CSE_ID")    # Custom Search Engine ID
+GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
+GOOGLE_CSE_ID = os.environ.get("GOOGLE_CSE_ID")
 
 if not all([DATABASE_URL, GROQ_API_KEY, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, YOUR_NUMBER, GOOGLE_API_KEY, GOOGLE_CSE_ID]):
     raise ValueError("Please set all required environment variables!")
@@ -177,6 +177,8 @@ def jarvis_daily_updates():
         cursor.execute("SELECT interest,level FROM interests WHERE user_id=%s ORDER BY level DESC",(YOUR_NUMBER,))
         interests = cursor.fetchall()
         for interest,level in interests:
+            if level < 2:  # skip casual mentions
+                continue
             num_results = min(level,4)
             search_result = google_search(f"{interest} news", num_results=num_results)
             message += f"📰 Top {interest} news:\n{search_result}\n\n"
@@ -224,7 +226,7 @@ def ask_groq(prompt,profile_facts):
 # -----------------------------
 # WHATSAPP WEBHOOK
 # -----------------------------
-@app.route("/whatsapp",methods=["POST"])
+@app.route("/whatsapp", methods=["POST"])
 def whatsapp_webhook():
     data = request.form
     user_id = data.get("From")
@@ -232,32 +234,31 @@ def whatsapp_webhook():
     if not user_id or not user_message:
         return "OK",200
 
-    # Memory & profile
+    # MEMORY & PROFILE
     chat_history = get_memory(user_id)
     profile_facts = get_profile(user_id)
     updated_facts = extract_facts(profile_facts,user_message)
     update_profile(user_id,updated_facts)
 
-    # Task detection
+    # TASK DETECTION
     task = extract_task_from_message(user_message)
     if task and task.upper()!="NONE":
         add_task(user_id,task)
 
-    # Interest detection
+    # INTEREST DETECTION
     interests = extract_interests(user_message)
     update_interests(user_id,interests)
 
-    #Google keywords
-     search_keywords = ["search", "look up", "find", "tell me about"]
-    if any(user_message.lower().startswith(k) for k in search_keywords):
-    # Only trigger if message starts with a search keyword
-    search_result = google_search(user_message)
-    resp = MessagingResponse()
-    resp.message(search_result)
-    return str(resp)
+    # SMART KEYWORD SEARCH TRIGGER
+    search_keywords = ["search","look up","find","tell me about"]
+    user_lower = user_message.lower().strip()
+    if any(user_lower.startswith(k) for k in search_keywords) and len(user_lower.split())>2:
+        search_result = google_search(user_message)
+        resp = MessagingResponse()
+        resp.message(search_result)
+        return str(resp)
 
-
-    # AI response
+    # AI RESPONSE
     prompt = f"Chat history:\n{chat_history}\nUser: {user_message}\nJarvis:"
     ai_response = ask_groq(prompt,updated_facts)
     new_history = f"{chat_history}\nUser: {user_message}\nJarvis: {ai_response}"
@@ -288,4 +289,3 @@ scheduler.start()
 if __name__=="__main__":
     port=int(os.environ.get("PORT",8080))
     app.run(host="0.0.0.0",port=port)
-
