@@ -8,6 +8,8 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime
 import json
 import requests
+from PIL import Image
+import pytesseract
 import time
 
 # -----------------------------
@@ -24,6 +26,8 @@ GOOGLE_CSE_ID = os.environ.get("GOOGLE_CSE_ID")
 
 if not all([DATABASE_URL, GROQ_API_KEY, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, YOUR_NUMBER, GOOGLE_API_KEY, GOOGLE_CSE_ID]):
     raise ValueError("Please set all required environment variables!")
+
+DATABASE_URL = DATABASE_URL.strip()
 
 # -----------------------------
 # DATABASE SETUP
@@ -212,24 +216,20 @@ def solve_task(task):
     task_id, description, status, attempts, max_attempts, alternatives_json = task
     alternatives = json.loads(alternatives_json) if alternatives_json else []
     
-    # Try original description first
     try:
         result = ask_groq(f"Attempt to complete this task autonomously: {description}", "")
         if "cannot" in result.lower() or "unable" in result.lower():
-            # Generate alternatives
             alt_prompt = f"Task: {description}\nI couldn't do it. Suggest alternative ways to complete it."
             alt_result = ask_groq(alt_prompt,"")
             alternatives.append(alt_result)
             update_task_alternatives(task_id, alternatives)
             increment_task_attempts(task_id)
-            # Try alternatives one by one
             for alt in alternatives:
                 alt_try = ask_groq(f"Try to complete this alternative autonomously: {alt}","")
                 if "cannot" not in alt_try.lower() and "unable" not in alt_try.lower():
                     mark_task_done(task_id)
                     send_whatsapp_message(YOUR_NUMBER,f"✅ Task completed autonomously: {alt}")
                     return
-            # All failed
             if attempts+1 >= max_attempts:
                 mark_task_done(task_id)
                 send_whatsapp_message(YOUR_NUMBER,f"⚠️ Task failed after trying all alternatives: {description}")
@@ -250,12 +250,10 @@ def run_autonomous_tasks():
 def jarvis_daily_updates():
     now = datetime.now()
     if now.hour == 5 and now.minute == 0:
-        # Morning Briefing
         message = "🌅 Good morning!\n\n📋 Tasks for today:\n"
         tasks_text = "\n".join([f"• {t[1]}" for t in get_pending_tasks(YOUR_NUMBER)])
         message += tasks_text + "\n\n"
 
-        # Interest-based news
         cursor.execute("SELECT interest,level FROM interests WHERE user_id=%s ORDER BY level DESC",(YOUR_NUMBER,))
         interests = cursor.fetchall()
         for interest,level in interests:
@@ -265,42 +263,66 @@ def jarvis_daily_updates():
 
         send_whatsapp_message(YOUR_NUMBER,message.strip())
     if now.hour == 22 and now.minute == 0:
-        # Nightly Update
         message = "🌙 Nightly update:\n\n"
-        completed = cursor.execute("SELECT description FROM tasks WHERE user_id=%s AND status='done'",(YOUR_NUMBER,))
+        cursor.execute("SELECT description FROM tasks WHERE user_id=%s AND status='done'",(YOUR_NUMBER,))
+        completed = cursor.fetchall()
         pending = get_pending_tasks(YOUR_NUMBER)
         message += f"✅ Completed tasks: {len(completed) if completed else 0}\n"
         message += f"⏳ Pending tasks: {len(pending)}\n"
         send_whatsapp_message(YOUR_NUMBER,message.strip())
-    
-    # Run autonomous tasks after updates
+
     run_autonomous_tasks()
 
 # -----------------------------
-# WHATSAPP WEBHOOK
+# WHATSAPP WEBHOOK (TEXT + IMAGE)
 # -----------------------------
 @app.route("/whatsapp", methods=["POST"])
 def whatsapp_webhook():
     data = request.form
     user_id = data.get("From")
-    user_message = data.get("Body")
-    if not user_id or not user_message:
+    user_message = data.get("Body","")
+    media_url = data.get("MediaUrl0")
+    media_type = data.get("MediaContentType0")
+
+    if not user_id:
         return "OK",200
 
+    # -----------------------------
+    # Step 1: Image OCR
+    # -----------------------------
+    if media_url and media_type and media_type.startswith("image"):
+        try:
+            img_path = "temp_image.jpg"
+            resp = requests.get(media_url)
+            if resp.status_code == 200:
+                with open(img_path,"wb") as f:
+                    f.write(resp.content)
+                ocr_text = pytesseract.image_to_string(Image.open(img_path)).strip()
+                user_message += f"\n{ocr_text}"
+        except Exception as e:
+            send_whatsapp_message(user_id,f"⚠️ Could not process image: {e}")
+
+    # -----------------------------
     # Memory & Profile
+    # -----------------------------
     chat_history = get_memory(user_id)
     profile_facts = get_profile(user_id)
     updated_facts = extract_facts(profile_facts,user_message)
     update_profile(user_id,updated_facts)
 
+    # -----------------------------
     # Tasks & Interests
+    # -----------------------------
     task_text = extract_task_from_message(user_message)
     if task_text and task_text.upper()!="NONE":
         add_task(user_id,task_text)
+
     interests = extract_interests(user_message)
     update_interests(user_id,interests)
 
+    # -----------------------------
     # Smart Keyword Search
+    # -----------------------------
     search_keywords = ["search","look up","find","tell me about"]
     user_lower = user_message.lower().strip()
     if any(user_lower.startswith(k) for k in search_keywords) and len(user_lower.split())>2:
@@ -309,7 +331,9 @@ def whatsapp_webhook():
         resp.message(result)
         return str(resp)
 
+    # -----------------------------
     # Default AI Response
+    # -----------------------------
     prompt = f"Chat history:\n{chat_history}\nUser: {user_message}\nJarvis:"
     ai_response = ask_groq(prompt,updated_facts)
     new_history = f"{chat_history}\nUser: {user_message}\nJarvis: {ai_response}"
