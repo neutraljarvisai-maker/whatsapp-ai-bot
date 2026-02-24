@@ -4,6 +4,8 @@ from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
 from twilio.rest import Client
 from groq import Groq
+from apscheduler.schedulers.background import BackgroundScheduler
+from datetime import datetime
 
 # -----------------------------
 # CONFIG
@@ -62,7 +64,7 @@ twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 app = Flask(__name__)
 
 # -----------------------------
-# 📩 SEND WHATSAPP MESSAGE (Jarvis proactive)
+# 📩 SEND WHATSAPP MESSAGE
 # -----------------------------
 def send_whatsapp_message(to_number, message):
     try:
@@ -74,6 +76,29 @@ def send_whatsapp_message(to_number, message):
         print("Message sent successfully!")
     except Exception as e:
         print("Twilio send error:", e)
+
+# -----------------------------
+# ⏰ JARVIS DAILY TASKS
+# -----------------------------
+def jarvis_daily_updates():
+
+    now = datetime.now()
+    hour = now.hour
+    minute = now.minute
+
+    # 🌅 5 AM briefing
+    if hour == 5 and minute == 0:
+        send_whatsapp_message(
+            "whatsapp:+917204595135",  # 🔴 YOUR NUMBER
+            "🌅 Good morning. Here is your daily briefing."
+        )
+
+    # 🌙 10 PM updates
+    if hour == 22 and minute == 0:
+        send_whatsapp_message(
+            "whatsapp:+917204595135",  # 🔴 YOUR NUMBER
+            "🌙 Here are your nightly updates."
+        )
 
 # -----------------------------
 # MEMORY FUNCTIONS
@@ -95,7 +120,6 @@ def update_memory(user_id, chat_history):
         SET chat_history = EXCLUDED.chat_history
     """, (user_id, chat_history))
 
-
 # -----------------------------
 # PROFILE MEMORY
 # -----------------------------
@@ -115,7 +139,6 @@ def update_profile(user_id, facts):
         ON CONFLICT (user_id) DO UPDATE
         SET facts = EXCLUDED.facts
     """, (user_id, facts))
-
 
 # -----------------------------
 # 🧠 FACT EXTRACTION
@@ -144,9 +167,8 @@ If nothing new, return existing facts.
 
     return response.choices[0].message.content
 
-
 # -----------------------------
-# 🤖 ASK GROQ (Jarvis brain)
+# 🤖 ASK GROQ
 # -----------------------------
 def ask_groq(prompt, profile_facts):
 
@@ -171,9 +193,8 @@ Speak professionally and helpfully.
 
     return chat_completion.choices[0].message.content
 
-
 # -----------------------------
-# 📱 WHATSAPP WEBHOOK (incoming)
+# 📱 WHATSAPP WEBHOOK
 # -----------------------------
 @app.route("/whatsapp", methods=["POST"])
 def whatsapp_webhook():
@@ -187,43 +208,43 @@ def whatsapp_webhook():
     if not user_id or not user_message:
         return "OK", 200
 
-    # Memory
     chat_history = get_memory(user_id)
     profile_facts = get_profile(user_id)
 
-    # Learn about user
     updated_facts = extract_facts(profile_facts, user_message)
     update_profile(user_id, updated_facts)
 
-    # Build prompt
     prompt = f"Chat history:\n{chat_history}\nUser: {user_message}\nJarvis:"
 
     ai_response = ask_groq(prompt, updated_facts)
 
-    # Save history
     new_history = f"{chat_history}\nUser: {user_message}\nJarvis: {ai_response}"
     update_memory(user_id, new_history)
 
-    # Reply
     resp = MessagingResponse()
     resp.message(ai_response)
 
     return str(resp)
 
-
 # -----------------------------
-# 🧪 TEST ROUTE — Jarvis sends YOU a message
+# 🧪 TEST ROUTE
 # -----------------------------
 @app.route("/test-send")
 def test_send():
 
     send_whatsapp_message(
-        "whatsapp:+917204595135",  # PUT YOUR NUMBER HERE
+        "whatsapp:+917204595135",  # 🔴 YOUR NUMBER
         "Jarvis online ✅"
     )
 
     return "Sent!"
 
+# -----------------------------
+# 🚀 START SCHEDULER
+# -----------------------------
+scheduler = BackgroundScheduler()
+scheduler.add_job(jarvis_daily_updates, "interval", minutes=1)
+scheduler.start()
 
 # -----------------------------
 # RUN APP
