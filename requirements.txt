@@ -4,6 +4,8 @@ requests
 gunicorn
 python-dotenv
 psycopg2-binary
+groq
+
 
 
 
