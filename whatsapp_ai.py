@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 import requests
 from PIL import Image
 import pytesseract
+from dateutil import parser
 
 # =============================
 # 📅 GOOGLE CALENDAR SETUP
@@ -16,11 +17,9 @@ import pytesseract
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from google_auth_oauthlib.flow import Flow
-from dateutil import parser
 
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET")
-
 TOKEN_FILE = "token.json"
 
 def get_calendar_service():
@@ -42,7 +41,6 @@ def create_event(text):
 
     service.events().insert(calendarId="primary", body=event).execute()
 
-
 # =============================
 # CONFIG
 # =============================
@@ -63,47 +61,28 @@ conn = psycopg2.connect(DATABASE_URL)
 conn.autocommit = True
 cursor = conn.cursor()
 
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS memory (
-    user_id TEXT PRIMARY KEY,
-    chat_history TEXT
-)
-""")
+cursor.execute("""CREATE TABLE IF NOT EXISTS memory(
+user_id TEXT PRIMARY KEY, chat_history TEXT)""")
 
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS profile_memory (
-    user_id TEXT PRIMARY KEY,
-    facts TEXT
-)
-""")
+cursor.execute("""CREATE TABLE IF NOT EXISTS profile_memory(
+user_id TEXT PRIMARY KEY, facts TEXT)""")
 
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS tasks (
-    id SERIAL PRIMARY KEY,
-    user_id TEXT,
-    description TEXT,
-    status TEXT DEFAULT 'pending',
-    attempts INTEGER DEFAULT 0,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-)
-""")
+cursor.execute("""CREATE TABLE IF NOT EXISTS interests(
+user_id TEXT, interest TEXT, level INTEGER DEFAULT 1,
+PRIMARY KEY(user_id,interest))""")
 
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS goals (
-    id SERIAL PRIMARY KEY,
-    user_id TEXT,
-    goal TEXT,
-    progress INTEGER DEFAULT 0,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-)
-""")
+cursor.execute("""CREATE TABLE IF NOT EXISTS tasks(
+id SERIAL PRIMARY KEY, user_id TEXT, description TEXT,
+status TEXT DEFAULT 'pending', attempts INTEGER DEFAULT 0,
+created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
 
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS last_seen (
-    user_id TEXT PRIMARY KEY,
-    last_time TIMESTAMP
-)
-""")
+cursor.execute("""CREATE TABLE IF NOT EXISTS goals(
+id SERIAL PRIMARY KEY, user_id TEXT, goal TEXT,
+progress INTEGER DEFAULT 0,
+created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
+
+cursor.execute("""CREATE TABLE IF NOT EXISTS last_seen(
+user_id TEXT PRIMARY KEY, last_time TIMESTAMP)""")
 
 # =============================
 # CLIENTS
@@ -114,7 +93,7 @@ app = Flask(__name__)
 
 PERSONALITY = """
 You are Jarvis — calm, intelligent, loyal, proactive,
-slightly witty, and protective of the user.
+slightly witty, protective, and helpful.
 """
 
 # =============================
@@ -126,7 +105,7 @@ def send_whatsapp(to, msg):
 def ask(prompt, facts=""):
     r = groq.chat.completions.create(
         messages=[
-            {"role":"system","content":PERSONALITY + f"\nUser facts:\n{facts}"},
+            {"role":"system","content":PERSONALITY + "\nFacts:\n" + facts},
             {"role":"user","content":prompt}
         ],
         model="llama-3.1-8b-instant"
@@ -153,6 +132,19 @@ def get_profile(uid):
     return r[0] if r else ""
 
 # =============================
+# INTEREST LEARNING
+# =============================
+def learn_interest(uid, msg):
+    topics = ["sports","tech","finance","study","cars","entertainment"]
+    for t in topics:
+        if t in msg.lower():
+            cursor.execute("""
+            INSERT INTO interests VALUES(%s,%s,1)
+            ON CONFLICT(user_id,interest)
+            DO UPDATE SET level = interests.level + 1
+            """,(uid,t))
+
+# =============================
 # LAST SEEN
 # =============================
 def update_last_seen(uid):
@@ -167,22 +159,14 @@ def get_last_seen(uid):
     return r[0] if r else None
 
 # =============================
-# 🎙️ VOICE — DEEPGRAM
+# 🎙️ VOICE → DEEPGRAM
 # =============================
 def transcribe_audio(url):
     audio = requests.get(url).content
-
-    headers = {
-        "Authorization": f"Token {DEEPGRAM_API_KEY}",
-        "Content-Type": "audio/ogg"
-    }
-
-    r = requests.post(
-        "https://api.deepgram.com/v1/listen",
-        headers=headers,
-        data=audio
-    )
-
+    headers = {"Authorization": f"Token {DEEPGRAM_API_KEY}",
+               "Content-Type": "audio/ogg"}
+    r = requests.post("https://api.deepgram.com/v1/listen",
+                      headers=headers, data=audio)
     try:
         return r.json()["results"]["channels"][0]["alternatives"][0]["transcript"]
     except:
@@ -192,26 +176,87 @@ def transcribe_audio(url):
 # TASK + GOALS
 # =============================
 def detect_task(msg):
-    t = ask(f"Is this something to do later? Return task or NONE.\n{msg}")
-    return t if t.upper() != "NONE" else None
+    t = ask(f"Task to do later? Return task or NONE.\n{msg}")
+    return t if t.upper()!="NONE" else None
 
 def add_task(uid, desc):
-    cursor.execute("INSERT INTO tasks(user_id,description) VALUES (%s,%s)",(uid, desc))
+    cursor.execute("INSERT INTO tasks(user_id,description) VALUES(%s,%s)",
+                   (uid,desc))
+
+def pending(uid):
+    cursor.execute("SELECT * FROM tasks WHERE user_id=%s AND status='pending'",
+                   (uid,))
+    return cursor.fetchall()
 
 def detect_goal(msg):
-    g = ask(f"Is this a long-term life goal? Return goal or NONE.\n{msg}")
-    return g if g.upper() != "NONE" else None
+    g = ask(f"Long-term goal? Return goal or NONE.\n{msg}")
+    return g if g.upper()!="NONE" else None
 
 def add_goal(uid, goal):
-    cursor.execute("INSERT INTO goals(user_id,goal) VALUES (%s,%s)",(uid, goal))
+    cursor.execute("INSERT INTO goals(user_id,goal) VALUES(%s,%s)",
+                   (uid,goal))
 
 # =============================
-# DAILY SYSTEM
+# ⏰ MULTI-STAGE NAGGING
+# =============================
+def intelligent_check():
+    tasks = pending(YOUR_NUMBER)
+    for t in tasks:
+        tid,uid,desc,status,attempts,created = t
+        age = (datetime.now()-created).total_seconds()/60
+
+        if age>120 and attempts==0:
+            send_whatsapp(YOUR_NUMBER,f"⏳ Reminder: {desc}")
+            cursor.execute("UPDATE tasks SET attempts=1 WHERE id=%s",(tid,))
+
+        elif age>360 and attempts==1:
+            send_whatsapp(YOUR_NUMBER,f"⚠️ Still not started: {desc}")
+            cursor.execute("UPDATE tasks SET attempts=2 WHERE id=%s",(tid,))
+
+        elif age>720 and attempts>=2:
+            send_whatsapp(YOUR_NUMBER,f"🚨 OVERDUE: {desc}")
+            cursor.execute("UPDATE tasks SET attempts=3 WHERE id=%s",(tid,))
+
+# =============================
+# 📅 ADVANCED PLANNER
+# =============================
+def planner():
+    tasks = pending(YOUR_NUMBER)
+    if tasks:
+        msg="📅 Plan for today:\n\n"
+        for t in tasks[:5]:
+            msg += f"• {t[2]}\n"
+        send_whatsapp(YOUR_NUMBER,msg)
+
+# =============================
+# 💤 INACTIVITY CHECK
+# =============================
+def inactivity_check():
+    last = get_last_seen(YOUR_NUMBER)
+    if last and datetime.now()-last>timedelta(hours=8):
+        send_whatsapp(YOUR_NUMBER,"👀 You’ve been quiet. Everything okay?")
+
+# =============================
+# 🌅 AUTONOMOUS SYSTEM
 # =============================
 def daily_updates():
-    last = get_last_seen(YOUR_NUMBER)
-    if last and datetime.now() - last > timedelta(hours=8):
-        send_whatsapp(YOUR_NUMBER, "👀 You’ve been quiet. Everything okay?")
+    now=datetime.now()
+
+    if now.hour==5 and now.minute==0:
+        planner()
+
+    if now.hour==21 and now.minute==0:
+        cursor.execute("SELECT goal,progress FROM goals WHERE user_id=%s",
+                       (YOUR_NUMBER,))
+        goals=cursor.fetchall()
+        if goals:
+            msg="🎯 Goals check:\n\n"
+            for g in goals:
+                msg+=f"• {g[0]} ({g[1]}%)\n"
+            send_whatsapp(YOUR_NUMBER,msg)
+
+    intelligent_check()
+    inactivity_check()
 
 # =============================
 # WHATSAPP WEBHOOK
@@ -219,23 +264,23 @@ def daily_updates():
 @app.route("/whatsapp",methods=["POST"])
 def whatsapp():
 
-    f = request.form
-    uid = f.get("From")
-    msg = f.get("Body","")
-    media = f.get("MediaUrl0")
-    mtype = f.get("MediaContentType0")
+    f=request.form
+    uid=f.get("From")
+    msg=f.get("Body","")
+    media=f.get("MediaUrl0")
+    mtype=f.get("MediaContentType0")
 
     if not uid:
         return "OK"
 
     update_last_seen(uid)
 
-    # 📅 CALENDAR COMMAND (AUTO)
-    if any(word in msg.lower() for word in ["add","schedule","remind","meeting","appointment"]):
+    # 📅 Calendar trigger
+    if any(x in msg.lower() for x in ["schedule","add","remind"]):
         try:
             create_event(msg)
-            r = MessagingResponse()
-            r.message("📅 Event added to your Google Calendar.")
+            r=MessagingResponse()
+            r.message("📅 Event added to calendar.")
             return str(r)
         except:
             pass
@@ -244,29 +289,28 @@ def whatsapp():
     if media and mtype and "audio" in mtype:
         msg += "\n" + transcribe_audio(media)
 
-    # 🖼️ Image OCR
+    # 🖼️ OCR
     if media and mtype and mtype.startswith("image"):
-        img = requests.get(media).content
+        img=requests.get(media).content
         open("tmp.jpg","wb").write(img)
         msg += "\n" + pytesseract.image_to_string(Image.open("tmp.jpg"))
 
-    hist = get_memory(uid)
-    facts = get_profile(uid)
+    learn_interest(uid,msg)
 
-    task = detect_task(msg)
-    if task:
-        add_task(uid, task)
+    hist=get_memory(uid)
+    facts=get_profile(uid)
 
-    goal = detect_goal(msg)
-    if goal:
-        add_goal(uid, goal)
+    task=detect_task(msg)
+    if task: add_task(uid,task)
 
-    prompt = f"{hist}\nUser:{msg}\nJarvis:"
-    reply = ask(prompt, facts)
+    goal=detect_goal(msg)
+    if goal: add_goal(uid,goal)
 
-    update_memory(uid, hist + f"\nUser:{msg}\nJarvis:{reply}")
+    reply=ask(hist+"\nUser:"+msg+"\nJarvis:",facts)
 
-    r = MessagingResponse()
+    update_memory(uid,hist+f"\nUser:{msg}\nJarvis:{reply}")
+
+    r=MessagingResponse()
     r.message(reply)
     return str(r)
 
@@ -275,63 +319,52 @@ def whatsapp():
 # =============================
 @app.route("/authorize")
 def authorize():
-
-    flow = Flow.from_client_config(
-        {
-            "web": {
-                "client_id": GOOGLE_CLIENT_ID,
-                "client_secret": GOOGLE_CLIENT_SECRET,
-                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                "token_uri": "https://oauth2.googleapis.com/token",
-                "redirect_uris": [
-                    "https://whatsapp-ai-bot-production-bc04.up.railway.app/callback"
-                ],
-            }
-        },
-        scopes=["https://www.googleapis.com/auth/calendar"],
-    )
-
-    flow.redirect_uri = "https://whatsapp-ai-bot-production-bc04.up.railway.app/callback"
-
-    auth_url, _ = flow.authorization_url(prompt="consent")
-
-    return f'<a href="{auth_url}">Authorize Calendar Access</a>'
-
+    flow=Flow.from_client_config(
+        {"web":{
+            "client_id":GOOGLE_CLIENT_ID,
+            "client_secret":GOOGLE_CLIENT_SECRET,
+            "auth_uri":"https://accounts.google.com/o/oauth2/auth",
+            "token_uri":"https://oauth2.googleapis.com/token",
+            "redirect_uris":[
+                "https://whatsapp-ai-bot-production-bc04.up.railway.app/callback"
+            ]}},
+        scopes=["https://www.googleapis.com/auth/calendar"])
+    flow.redirect_uri="https://whatsapp-ai-bot-production-bc04.up.railway.app/callback"
+    auth_url,_=flow.authorization_url(prompt="consent")
+    return f'<a href="{auth_url}">Authorize Calendar</a>'
 
 @app.route("/callback")
 def callback():
-
-    flow = Flow.from_client_config(
-        {
-            "web": {
-                "client_id": GOOGLE_CLIENT_ID,
-                "client_secret": GOOGLE_CLIENT_SECRET,
-                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                "token_uri": "https://oauth2.googleapis.com/token",
-                "redirect_uris": [
-                    "https://whatsapp-ai-bot-production-bc04.up.railway.app/callback"
-                ],
-            }
-        },
-        scopes=["https://www.googleapis.com/auth/calendar"],
-    )
-
-    flow.redirect_uri = "https://whatsapp-ai-bot-production-bc04.up.railway.app/callback"
-
+    flow=Flow.from_client_config(
+        {"web":{
+            "client_id":GOOGLE_CLIENT_ID,
+            "client_secret":GOOGLE_CLIENT_SECRET,
+            "auth_uri":"https://accounts.google.com/o/oauth2/auth",
+            "token_uri":"https://oauth2.googleapis.com/token",
+            "redirect_uris":[
+                "https://whatsapp-ai-bot-production-bc04.up.railway.app/callback"
+            ]}},
+        scopes=["https://www.googleapis.com/auth/calendar"])
+    flow.redirect_uri="https://whatsapp-ai-bot-production-bc04.up.railway.app/callback"
     flow.fetch_token(authorization_response=request.url)
-
-    creds = flow.credentials
-
-    with open("token.json", "w") as f:
+    creds=flow.credentials
+    with open("token.json","w") as f:
         f.write(creds.to_json())
+    return "✅ Calendar connected!"
 
-    return "✅ Calendar connected! You can close this tab."
+# =============================
+# TEST ROUTE
+# =============================
+@app.route("/test-send")
+def test():
+    send_whatsapp(YOUR_NUMBER,"Jarvis FULL CORE online ⚡")
+    return "OK"
 
 # =============================
 # SCHEDULER
 # =============================
-sched = BackgroundScheduler()
-sched.add_job(daily_updates, "interval", minutes=1)
+sched=BackgroundScheduler()
+sched.add_job(daily_updates,"interval",minutes=1)
 sched.start()
 
 # =============================
@@ -340,3 +373,4 @@ sched.start()
 if __name__=="__main__":
     port=int(os.environ.get("PORT",8080))
     app.run(host="0.0.0.0",port=port)
+
