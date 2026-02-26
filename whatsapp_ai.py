@@ -9,17 +9,18 @@ from datetime import datetime, timedelta
 import requests
 from PIL import Image
 import pytesseract
+
 # =============================
 # 📅 GOOGLE CALENDAR SETUP
 # =============================
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
+from google_auth_oauthlib.flow import Flow
 from dateutil import parser
 
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET")
 
-# Temporary token storage (later we can save in DB)
 TOKEN_FILE = "token.json"
 
 def get_calendar_service():
@@ -28,8 +29,6 @@ def get_calendar_service():
 
 def create_event(text):
     service = get_calendar_service()
-
-    # Try to extract date/time from message
     dt = parser.parse(text, fuzzy=True)
 
     event = {
@@ -154,7 +153,7 @@ def get_profile(uid):
     return r[0] if r else ""
 
 # =============================
-# LAST SEEN TRACKING
+# LAST SEEN
 # =============================
 def update_last_seen(uid):
     cursor.execute("""
@@ -168,20 +167,21 @@ def get_last_seen(uid):
     return r[0] if r else None
 
 # =============================
-# 🎙️ VOICE TRANSCRIPTION (DEEPGRAM)
+# 🎙️ VOICE — DEEPGRAM
 # =============================
 def transcribe_audio(url):
-
     audio = requests.get(url).content
-
-    dg_url = "https://api.deepgram.com/v1/listen"
 
     headers = {
         "Authorization": f"Token {DEEPGRAM_API_KEY}",
         "Content-Type": "audio/ogg"
     }
 
-    r = requests.post(dg_url, headers=headers, data=audio)
+    r = requests.post(
+        "https://api.deepgram.com/v1/listen",
+        headers=headers,
+        data=audio
+    )
 
     try:
         return r.json()["results"]["channels"][0]["alternatives"][0]["transcript"]
@@ -189,115 +189,29 @@ def transcribe_audio(url):
         return ""
 
 # =============================
-# TASK SYSTEM
+# TASK + GOALS
 # =============================
 def detect_task(msg):
     t = ask(f"Is this something to do later? Return task or NONE.\n{msg}")
     return t if t.upper() != "NONE" else None
 
 def add_task(uid, desc):
-    cursor.execute(
-        "INSERT INTO tasks(user_id,description) VALUES (%s,%s)",
-        (uid, desc)
-    )
+    cursor.execute("INSERT INTO tasks(user_id,description) VALUES (%s,%s)",(uid, desc))
 
-def pending(uid):
-    cursor.execute(
-        "SELECT id, description, attempts, created_at FROM tasks WHERE user_id=%s AND status='pending'",
-        (uid,)
-    )
-    return cursor.fetchall()
-
-# =============================
-# 🎯 GOALS
-# =============================
 def detect_goal(msg):
     g = ask(f"Is this a long-term life goal? Return goal or NONE.\n{msg}")
     return g if g.upper() != "NONE" else None
 
 def add_goal(uid, goal):
-    cursor.execute(
-        "INSERT INTO goals(user_id,goal) VALUES (%s,%s)",
-        (uid, goal)
-    )
+    cursor.execute("INSERT INTO goals(user_id,goal) VALUES (%s,%s)",(uid, goal))
 
 # =============================
-# 🧠 INTELLIGENT CHECK ENGINE
-# =============================
-def intelligent_check():
-
-    tasks = pending(YOUR_NUMBER)
-
-    for tid, desc, attempts, created in tasks:
-        age = (datetime.now() - created).total_seconds() / 60
-
-        if age > 120 and attempts == 0:
-            send_whatsapp(YOUR_NUMBER, f"⏳ Reminder: {desc}")
-            cursor.execute("UPDATE tasks SET attempts=1 WHERE id=%s",(tid,))
-
-        elif age > 360 and attempts == 1:
-            send_whatsapp(YOUR_NUMBER, f"⚠️ You still haven't started: {desc}")
-            cursor.execute("UPDATE tasks SET attempts=2 WHERE id=%s",(tid,))
-
-        elif age > 720 and attempts >= 2:
-            send_whatsapp(
-                YOUR_NUMBER,
-                f"🚨 This task is overdue: {desc}\nWant me to break it into steps?"
-            )
-            cursor.execute("UPDATE tasks SET attempts=3 WHERE id=%s",(tid,))
-
-# =============================
-# 📅 DAILY PLANNER
-# =============================
-def planner():
-    tasks = pending(YOUR_NUMBER)
-
-    if tasks:
-        msg = "📅 Suggested plan for today:\n\n"
-        for t in tasks[:5]:
-            msg += f"• {t[1]}\n"
-        send_whatsapp(YOUR_NUMBER, msg)
-
-# =============================
-# 💤 INACTIVITY CHECK
-# =============================
-def inactivity_check():
-
-    last = get_last_seen(YOUR_NUMBER)
-    if not last:
-        return
-
-    if datetime.now() - last > timedelta(hours=8):
-        send_whatsapp(
-            YOUR_NUMBER,
-            "👀 You’ve been quiet for a while. Everything okay?"
-        )
-
-# =============================
-# 🌅 DAILY AUTONOMOUS SYSTEM
+# DAILY SYSTEM
 # =============================
 def daily_updates():
-
-    now = datetime.now()
-
-    if now.hour == 5 and now.minute == 0:
-        planner()
-
-    if now.hour == 21 and now.minute == 0:
-        cursor.execute(
-            "SELECT goal, progress FROM goals WHERE user_id=%s",
-            (YOUR_NUMBER,)
-        )
-        goals = cursor.fetchall()
-
-        if goals:
-            msg = "🎯 Goals check-in:\n\n"
-            for g in goals:
-                msg += f"• {g[0]} ({g[1]}%)\n"
-            send_whatsapp(YOUR_NUMBER, msg)
-
-    intelligent_check()
-    inactivity_check()
+    last = get_last_seen(YOUR_NUMBER)
+    if last and datetime.now() - last > timedelta(hours=8):
+        send_whatsapp(YOUR_NUMBER, "👀 You’ve been quiet. Everything okay?")
 
 # =============================
 # WHATSAPP WEBHOOK
@@ -316,7 +230,17 @@ def whatsapp():
 
     update_last_seen(uid)
 
-    # 🎙️ Voice note → Deepgram
+    # 📅 CALENDAR COMMAND (AUTO)
+    if any(word in msg.lower() for word in ["add","schedule","remind","meeting","appointment"]):
+        try:
+            create_event(msg)
+            r = MessagingResponse()
+            r.message("📅 Event added to your Google Calendar.")
+            return str(r)
+        except:
+            pass
+
+    # 🎙️ Voice
     if media and mtype and "audio" in mtype:
         msg += "\n" + transcribe_audio(media)
 
@@ -347,21 +271,11 @@ def whatsapp():
     return str(r)
 
 # =============================
-# TEST ROUTE
-# =============================
-@app.route("/test-send")
-def test():
-    send_whatsapp(YOUR_NUMBER, "Jarvis V2 online ⚡")
-    return "OK"
-
-
-# =============================
 # 🔐 GOOGLE AUTH ROUTES
 # =============================
-from google_auth_oauthlib.flow import Flow
-
 @app.route("/authorize")
 def authorize():
+
     flow = Flow.from_client_config(
         {
             "web": {
@@ -386,6 +300,7 @@ def authorize():
 
 @app.route("/callback")
 def callback():
+
     flow = Flow.from_client_config(
         {
             "web": {
@@ -425,4 +340,3 @@ sched.start()
 if __name__=="__main__":
     port=int(os.environ.get("PORT",8080))
     app.run(host="0.0.0.0",port=port)
-
