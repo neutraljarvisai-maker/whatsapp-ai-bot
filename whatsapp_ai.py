@@ -188,6 +188,55 @@ def run_tasks():
         solve_task(t)
 
 # =============================
+# ⭐ AUTONOMOUS DECISION ENGINE
+# =============================
+def intelligent_check():
+    now = datetime.now()
+
+    cursor.execute("""
+        SELECT id, description, created_at, attempts
+        FROM tasks
+        WHERE user_id=%s AND status='pending'
+    """, (YOUR_NUMBER,))
+    tasks = cursor.fetchall()
+
+    if not tasks:
+        return
+
+    for tid, desc, created, attempts in tasks:
+        age_minutes = (now - created).total_seconds() / 60
+
+        if age_minutes > 720 and attempts >= 1:
+            send_whatsapp(
+                YOUR_NUMBER,
+                f"🚨 Overdue task: {desc}\nWant help breaking it down?"
+            )
+            cursor.execute(
+                "UPDATE tasks SET attempts=attempts+1 WHERE id=%s",
+                (tid,)
+            )
+
+        elif age_minutes > 360 and attempts == 0:
+            send_whatsapp(
+                YOUR_NUMBER,
+                f"⚠️ You still haven't started: {desc}"
+            )
+            cursor.execute(
+                "UPDATE tasks SET attempts=attempts+1 WHERE id=%s",
+                (tid,)
+            )
+
+        elif age_minutes > 120 and attempts == 0:
+            send_whatsapp(
+                YOUR_NUMBER,
+                f"⏳ Reminder: {desc}"
+            )
+            cursor.execute(
+                "UPDATE tasks SET attempts=attempts+1 WHERE id=%s",
+                (tid,)
+            )
+
+# =============================
 # DAILY UPDATES
 # =============================
 def daily_updates():
@@ -209,6 +258,7 @@ def daily_updates():
         send_whatsapp(YOUR_NUMBER,f"🌙 Night report\nCompleted tasks: {done}")
 
     run_tasks()
+    intelligent_check()   # ⭐ NEW
 
 # =============================
 # WHATSAPP WEBHOOK
