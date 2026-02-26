@@ -5,8 +5,7 @@ from twilio.twiml.messaging_response import MessagingResponse
 from twilio.rest import Client
 from groq import Groq
 from apscheduler.schedulers.background import BackgroundScheduler
-from datetime import datetime
-import json
+from datetime import datetime, timedelta
 import requests
 from PIL import Image
 import pytesseract
@@ -20,8 +19,7 @@ TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 TWILIO_WHATSAPP_NUMBER = "whatsapp:+14155238886"
 YOUR_NUMBER = os.environ.get("YOUR_NUMBER")
-GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
-GOOGLE_CSE_ID = os.environ.get("GOOGLE_CSE_ID")
+DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY")
 
 pytesseract.pytesseract.tesseract_cmd = "/usr/bin/tesseract"
 
@@ -47,24 +45,30 @@ CREATE TABLE IF NOT EXISTS profile_memory (
 """)
 
 cursor.execute("""
-CREATE TABLE IF NOT EXISTS interests (
-    user_id TEXT,
-    interest TEXT,
-    level INTEGER DEFAULT 1,
-    PRIMARY KEY (user_id, interest)
-)
-""")
-
-cursor.execute("""
 CREATE TABLE IF NOT EXISTS tasks (
     id SERIAL PRIMARY KEY,
     user_id TEXT,
     description TEXT,
     status TEXT DEFAULT 'pending',
     attempts INTEGER DEFAULT 0,
-    max_attempts INTEGER DEFAULT 4,
-    alternatives JSON DEFAULT '[]',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)
+""")
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS goals (
+    id SERIAL PRIMARY KEY,
+    user_id TEXT,
+    goal TEXT,
+    progress INTEGER DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)
+""")
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS last_seen (
+    user_id TEXT PRIMARY KEY,
+    last_time TIMESTAMP
 )
 """)
 
@@ -73,8 +77,12 @@ CREATE TABLE IF NOT EXISTS tasks (
 # =============================
 groq = Groq(api_key=GROQ_API_KEY)
 twilio = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-
 app = Flask(__name__)
+
+PERSONALITY = """
+You are Jarvis — calm, intelligent, loyal, proactive,
+slightly witty, and protective of the user.
+"""
 
 # =============================
 # UTILITIES
@@ -82,6 +90,19 @@ app = Flask(__name__)
 def send_whatsapp(to, msg):
     twilio.messages.create(body=msg, from_=TWILIO_WHATSAPP_NUMBER, to=to)
 
+def ask(prompt, facts=""):
+    r = groq.chat.completions.create(
+        messages=[
+            {"role":"system","content":PERSONALITY + f"\nUser facts:\n{facts}"},
+            {"role":"user","content":prompt}
+        ],
+        model="llama-3.1-8b-instant"
+    )
+    return r.choices[0].message.content.strip()
+
+# =============================
+# MEMORY
+# =============================
 def get_memory(uid):
     cursor.execute("SELECT chat_history FROM memory WHERE user_id=%s",(uid,))
     r = cursor.fetchone()
@@ -98,210 +119,196 @@ def get_profile(uid):
     r = cursor.fetchone()
     return r[0] if r else ""
 
-def update_profile(uid,facts):
+# =============================
+# LAST SEEN TRACKING
+# =============================
+def update_last_seen(uid):
     cursor.execute("""
-    INSERT INTO profile_memory VALUES (%s,%s)
-    ON CONFLICT(user_id) DO UPDATE SET facts=EXCLUDED.facts
-    """,(uid,facts))
+    INSERT INTO last_seen VALUES (%s,%s)
+    ON CONFLICT(user_id) DO UPDATE SET last_time=EXCLUDED.last_time
+    """,(uid, datetime.now()))
+
+def get_last_seen(uid):
+    cursor.execute("SELECT last_time FROM last_seen WHERE user_id=%s",(uid,))
+    r = cursor.fetchone()
+    return r[0] if r else None
 
 # =============================
-# GROQ HELPERS
+# 🎙️ VOICE TRANSCRIPTION (DEEPGRAM)
 # =============================
-def ask(prompt, facts=""):
-    r = groq.chat.completions.create(
-        messages=[
-            {"role":"system","content":f"You are Jarvis. Keep replies short. User facts:\n{facts}"},
-            {"role":"user","content":prompt}
-        ],
-        model="llama-3.1-8b-instant"
-    )
-    return r.choices[0].message.content.strip()
+def transcribe_audio(url):
 
-def extract_facts(old, msg):
-    p=f"Old facts:\n{old}\nMessage:\n{msg}\nUpdate facts briefly."
-    return ask(p)
+    audio = requests.get(url).content
 
-# =============================
-# INTEREST SYSTEM
-# =============================
-CATS=["Sports","Entertainment","Tech","Study","Finance","Cars"]
+    dg_url = "https://api.deepgram.com/v1/listen"
 
-def learn_interests(uid,msg):
-    p=f"Detect interests from message. Categories:{CATS}. Return JSON list with topic and level 1-4.\n{msg}"
+    headers = {
+        "Authorization": f"Token {DEEPGRAM_API_KEY}",
+        "Content-Type": "audio/ogg"
+    }
+
+    r = requests.post(dg_url, headers=headers, data=audio)
+
     try:
-        j=json.loads(ask(p))
-        for it in j:
-            t=it["topic"].capitalize()
-            l=max(1,min(4,it["level"]))
-            cursor.execute("SELECT level FROM interests WHERE user_id=%s AND interest=%s",(uid,t))
-            ex=cursor.fetchone()
-            if ex:
-                cursor.execute("UPDATE interests SET level=%s WHERE user_id=%s AND interest=%s",(max(ex[0],l),uid,t))
-            else:
-                cursor.execute("INSERT INTO interests VALUES (%s,%s,%s)",(uid,t,l))
+        return r.json()["results"]["channels"][0]["alternatives"][0]["transcript"]
     except:
-        pass
-
-# =============================
-# GOOGLE SEARCH
-# =============================
-def google_search(q):
-    url="https://www.googleapis.com/customsearch/v1"
-    params={"key":GOOGLE_API_KEY,"cx":GOOGLE_CSE_ID,"q":q,"num":3}
-    r=requests.get(url,params=params).json()
-    if "items" not in r: return "No results."
-    return "\n\n".join([f"{i['title']}\n{i['link']}" for i in r["items"]])
+        return ""
 
 # =============================
 # TASK SYSTEM
 # =============================
 def detect_task(msg):
-    t=ask(f"Is this a task? Return task or NONE.\n{msg}")
-    return t if t.upper()!="NONE" else None
+    t = ask(f"Is this something to do later? Return task or NONE.\n{msg}")
+    return t if t.upper() != "NONE" else None
 
-def add_task(uid,desc):
-    cursor.execute("INSERT INTO tasks(user_id,description) VALUES (%s,%s)",(uid,desc))
+def add_task(uid, desc):
+    cursor.execute(
+        "INSERT INTO tasks(user_id,description) VALUES (%s,%s)",
+        (uid, desc)
+    )
 
 def pending(uid):
-    cursor.execute("SELECT * FROM tasks WHERE user_id=%s AND status='pending'",(uid,))
+    cursor.execute(
+        "SELECT id, description, attempts, created_at FROM tasks WHERE user_id=%s AND status='pending'",
+        (uid,)
+    )
     return cursor.fetchall()
 
-def solve_task(t):
-    tid,uid,desc,_,att,maxa,alts,_ = t
-    alts=json.loads(alts) if alts else []
+# =============================
+# 🎯 GOALS
+# =============================
+def detect_goal(msg):
+    g = ask(f"Is this a long-term life goal? Return goal or NONE.\n{msg}")
+    return g if g.upper() != "NONE" else None
 
-    res=ask(f"Solve this autonomously: {desc}")
-    if "cannot" in res.lower() or "unable" in res.lower():
-        alt=ask(f"Suggest alternative ways to do: {desc}")
-        alts.append(alt)
-        cursor.execute("UPDATE tasks SET attempts=attempts+1,alternatives=%s WHERE id=%s",(json.dumps(alts),tid))
-
-        if att+1>=maxa:
-            cursor.execute("UPDATE tasks SET status='failed' WHERE id=%s",(tid,))
-            send_whatsapp(uid,f"⚠️ Task failed: {desc}")
-    else:
-        cursor.execute("UPDATE tasks SET status='done' WHERE id=%s",(tid,))
-        send_whatsapp(uid,f"✅ Done: {desc}")
-
-def run_tasks():
-    for t in pending(YOUR_NUMBER):
-        solve_task(t)
+def add_goal(uid, goal):
+    cursor.execute(
+        "INSERT INTO goals(user_id,goal) VALUES (%s,%s)",
+        (uid, goal)
+    )
 
 # =============================
-# ⭐ AUTONOMOUS DECISION ENGINE
+# 🧠 INTELLIGENT CHECK ENGINE
 # =============================
 def intelligent_check():
-    now = datetime.now()
 
-    cursor.execute("""
-        SELECT id, description, created_at, attempts
-        FROM tasks
-        WHERE user_id=%s AND status='pending'
-    """, (YOUR_NUMBER,))
-    tasks = cursor.fetchall()
+    tasks = pending(YOUR_NUMBER)
 
-    if not tasks:
+    for tid, desc, attempts, created in tasks:
+        age = (datetime.now() - created).total_seconds() / 60
+
+        if age > 120 and attempts == 0:
+            send_whatsapp(YOUR_NUMBER, f"⏳ Reminder: {desc}")
+            cursor.execute("UPDATE tasks SET attempts=1 WHERE id=%s",(tid,))
+
+        elif age > 360 and attempts == 1:
+            send_whatsapp(YOUR_NUMBER, f"⚠️ You still haven't started: {desc}")
+            cursor.execute("UPDATE tasks SET attempts=2 WHERE id=%s",(tid,))
+
+        elif age > 720 and attempts >= 2:
+            send_whatsapp(
+                YOUR_NUMBER,
+                f"🚨 This task is overdue: {desc}\nWant me to break it into steps?"
+            )
+            cursor.execute("UPDATE tasks SET attempts=3 WHERE id=%s",(tid,))
+
+# =============================
+# 📅 DAILY PLANNER
+# =============================
+def planner():
+    tasks = pending(YOUR_NUMBER)
+
+    if tasks:
+        msg = "📅 Suggested plan for today:\n\n"
+        for t in tasks[:5]:
+            msg += f"• {t[1]}\n"
+        send_whatsapp(YOUR_NUMBER, msg)
+
+# =============================
+# 💤 INACTIVITY CHECK
+# =============================
+def inactivity_check():
+
+    last = get_last_seen(YOUR_NUMBER)
+    if not last:
         return
 
-    for tid, desc, created, attempts in tasks:
-        age_minutes = (now - created).total_seconds() / 60
-
-        if age_minutes > 720 and attempts >= 1:
-            send_whatsapp(
-                YOUR_NUMBER,
-                f"🚨 Overdue task: {desc}\nWant help breaking it down?"
-            )
-            cursor.execute(
-                "UPDATE tasks SET attempts=attempts+1 WHERE id=%s",
-                (tid,)
-            )
-
-        elif age_minutes > 360 and attempts == 0:
-            send_whatsapp(
-                YOUR_NUMBER,
-                f"⚠️ You still haven't started: {desc}"
-            )
-            cursor.execute(
-                "UPDATE tasks SET attempts=attempts+1 WHERE id=%s",
-                (tid,)
-            )
-
-        elif age_minutes > 120 and attempts == 0:
-            send_whatsapp(
-                YOUR_NUMBER,
-                f"⏳ Reminder: {desc}"
-            )
-            cursor.execute(
-                "UPDATE tasks SET attempts=attempts+1 WHERE id=%s",
-                (tid,)
-            )
+    if datetime.now() - last > timedelta(hours=8):
+        send_whatsapp(
+            YOUR_NUMBER,
+            "👀 You’ve been quiet for a while. Everything okay?"
+        )
 
 # =============================
-# DAILY UPDATES
+# 🌅 DAILY AUTONOMOUS SYSTEM
 # =============================
 def daily_updates():
-    now=datetime.now()
 
-    if now.hour==5 and now.minute==0:
-        msg="🌅 Morning briefing\n\nTasks:\n"
-        msg+="\n".join([t[2] for t in pending(YOUR_NUMBER)]) or "None"
+    now = datetime.now()
 
-        cursor.execute("SELECT interest,level FROM interests WHERE user_id=%s AND level>=2",(YOUR_NUMBER,))
-        ints=cursor.fetchall()
-        for i,l in ints:
-            msg+=f"\n\n📰 {i} news:\n{google_search(i+' news')}"
-        send_whatsapp(YOUR_NUMBER,msg)
+    if now.hour == 5 and now.minute == 0:
+        planner()
 
-    if now.hour==22 and now.minute==0:
-        cursor.execute("SELECT count(*) FROM tasks WHERE user_id=%s AND status='done'",(YOUR_NUMBER,))
-        done=cursor.fetchone()[0]
-        send_whatsapp(YOUR_NUMBER,f"🌙 Night report\nCompleted tasks: {done}")
+    if now.hour == 21 and now.minute == 0:
+        cursor.execute(
+            "SELECT goal, progress FROM goals WHERE user_id=%s",
+            (YOUR_NUMBER,)
+        )
+        goals = cursor.fetchall()
 
-    run_tasks()
-    intelligent_check()   # ⭐ NEW
+        if goals:
+            msg = "🎯 Goals check-in:\n\n"
+            for g in goals:
+                msg += f"• {g[0]} ({g[1]}%)\n"
+            send_whatsapp(YOUR_NUMBER, msg)
+
+    intelligent_check()
+    inactivity_check()
 
 # =============================
 # WHATSAPP WEBHOOK
 # =============================
 @app.route("/whatsapp",methods=["POST"])
 def whatsapp():
-    f=request.form
-    uid=f.get("From")
-    msg=f.get("Body","")
-    media=f.get("MediaUrl0")
-    mtype=f.get("MediaContentType0")
 
-    if not uid: return "OK"
+    f = request.form
+    uid = f.get("From")
+    msg = f.get("Body","")
+    media = f.get("MediaUrl0")
+    mtype = f.get("MediaContentType0")
 
-    # IMAGE OCR
+    if not uid:
+        return "OK"
+
+    update_last_seen(uid)
+
+    # 🎙️ Voice note → Deepgram
+    if media and mtype and "audio" in mtype:
+        msg += "\n" + transcribe_audio(media)
+
+    # 🖼️ Image OCR
     if media and mtype and mtype.startswith("image"):
-        img=requests.get(media).content
+        img = requests.get(media).content
         open("tmp.jpg","wb").write(img)
-        text=pytesseract.image_to_string(Image.open("tmp.jpg"))
-        msg+="\n"+text
+        msg += "\n" + pytesseract.image_to_string(Image.open("tmp.jpg"))
 
-    # MEMORY
-    hist=get_memory(uid)
-    facts=get_profile(uid)
+    hist = get_memory(uid)
+    facts = get_profile(uid)
 
-    newfacts=extract_facts(facts,msg)
-    update_profile(uid,newfacts)
+    task = detect_task(msg)
+    if task:
+        add_task(uid, task)
 
-    learn_interests(uid,msg)
+    goal = detect_goal(msg)
+    if goal:
+        add_goal(uid, goal)
 
-    task=detect_task(msg)
-    if task: add_task(uid,task)
+    prompt = f"{hist}\nUser:{msg}\nJarvis:"
+    reply = ask(prompt, facts)
 
-    # SEARCH TRIGGER
-    if msg.lower().startswith(("search","find","look up","tell me about")):
-        reply=google_search(msg)
-    else:
-        prompt=f"{hist}\nUser:{msg}\nJarvis:"
-        reply=ask(prompt,newfacts)
+    update_memory(uid, hist + f"\nUser:{msg}\nJarvis:{reply}")
 
-    update_memory(uid, hist+f"\nUser:{msg}\nJarvis:{reply}")
-
-    r=MessagingResponse()
+    r = MessagingResponse()
     r.message(reply)
     return str(r)
 
@@ -310,14 +317,14 @@ def whatsapp():
 # =============================
 @app.route("/test-send")
 def test():
-    send_whatsapp(YOUR_NUMBER,"Jarvis online ✅")
+    send_whatsapp(YOUR_NUMBER, "Jarvis V2 online ⚡")
     return "OK"
 
 # =============================
 # SCHEDULER
 # =============================
-sched=BackgroundScheduler()
-sched.add_job(daily_updates,"interval",minutes=1)
+sched = BackgroundScheduler()
+sched.add_job(daily_updates, "interval", minutes=1)
 sched.start()
 
 # =============================
