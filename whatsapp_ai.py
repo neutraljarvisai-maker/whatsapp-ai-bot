@@ -9,6 +9,40 @@ from datetime import datetime, timedelta
 import requests
 from PIL import Image
 import pytesseract
+# =============================
+# 📅 GOOGLE CALENDAR SETUP
+# =============================
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
+from dateutil import parser
+
+GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
+GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET")
+
+# Temporary token storage (later we can save in DB)
+TOKEN_FILE = "token.json"
+
+def get_calendar_service():
+    creds = Credentials.from_authorized_user_file(TOKEN_FILE)
+    return build("calendar", "v3", credentials=creds)
+
+def create_event(text):
+    service = get_calendar_service()
+
+    # Try to extract date/time from message
+    dt = parser.parse(text, fuzzy=True)
+
+    event = {
+        "summary": text,
+        "start": {"dateTime": dt.isoformat(), "timeZone": "Asia/Kolkata"},
+        "end": {
+            "dateTime": (dt + timedelta(hours=1)).isoformat(),
+            "timeZone": "Asia/Kolkata",
+        },
+    }
+
+    service.events().insert(calendarId="primary", body=event).execute()
+
 
 # =============================
 # CONFIG
@@ -320,6 +354,64 @@ def test():
     send_whatsapp(YOUR_NUMBER, "Jarvis V2 online ⚡")
     return "OK"
 
+
+# =============================
+# 🔐 GOOGLE AUTH ROUTES
+# =============================
+from google_auth_oauthlib.flow import Flow
+
+@app.route("/authorize")
+def authorize():
+    flow = Flow.from_client_config(
+        {
+            "web": {
+                "client_id": GOOGLE_CLIENT_ID,
+                "client_secret": GOOGLE_CLIENT_SECRET,
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token",
+                "redirect_uris": [
+                    "https://whatsapp-ai-bot-production-bc04.up.railway.app/callback"
+                ],
+            }
+        },
+        scopes=["https://www.googleapis.com/auth/calendar"],
+    )
+
+    flow.redirect_uri = "https://whatsapp-ai-bot-production-bc04.up.railway.app/callback"
+
+    auth_url, _ = flow.authorization_url(prompt="consent")
+
+    return f'<a href="{auth_url}">Authorize Calendar Access</a>'
+
+
+@app.route("/callback")
+def callback():
+    flow = Flow.from_client_config(
+        {
+            "web": {
+                "client_id": GOOGLE_CLIENT_ID,
+                "client_secret": GOOGLE_CLIENT_SECRET,
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token",
+                "redirect_uris": [
+                    "https://whatsapp-ai-bot-production-bc04.up.railway.app/callback"
+                ],
+            }
+        },
+        scopes=["https://www.googleapis.com/auth/calendar"],
+    )
+
+    flow.redirect_uri = "https://whatsapp-ai-bot-production-bc04.up.railway.app/callback"
+
+    flow.fetch_token(authorization_response=request.url)
+
+    creds = flow.credentials
+
+    with open("token.json", "w") as f:
+        f.write(creds.to_json())
+
+    return "✅ Calendar connected! You can close this tab."
+
 # =============================
 # SCHEDULER
 # =============================
@@ -333,3 +425,4 @@ sched.start()
 if __name__=="__main__":
     port=int(os.environ.get("PORT",8080))
     app.run(host="0.0.0.0",port=port)
+
