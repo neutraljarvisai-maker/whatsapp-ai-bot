@@ -4,7 +4,7 @@ from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
 from twilio.rest import Client
 from groq import Groq
-from apscheduler.schedulers.background import BackgroundScheduler
+# from apscheduler.schedulers.background import BackgroundScheduler  # DISABLED
 from datetime import datetime, timedelta
 import requests
 from PIL import Image
@@ -103,14 +103,18 @@ def send_whatsapp(to, msg):
     twilio.messages.create(body=msg, from_=TWILIO_WHATSAPP_NUMBER, to=to)
 
 def ask(prompt, facts=""):
-    r = groq.chat.completions.create(
-        messages=[
-            {"role":"system","content":PERSONALITY + "\nFacts:\n" + facts},
-            {"role":"user","content":prompt}
-        ],
-        model="llama-3.1-8b-instant"
-    )
-    return r.choices[0].message.content.strip()
+    try:
+        r = groq.chat.completions.create(
+            messages=[
+                {"role":"system","content":PERSONALITY + "\nFacts:\n" + facts},
+                {"role":"user","content":prompt}
+            ],
+            model="llama-3.1-8b-instant"
+        )
+        return r.choices[0].message.content.strip()
+    except Exception as e:
+        print("Groq error:", e)
+        return "I'm a bit overloaded right now. Try again in a moment."
 
 # =============================
 # MEMORY
@@ -203,6 +207,10 @@ def intelligent_check():
     tasks = pending(YOUR_NUMBER)
     for t in tasks:
         tid,uid,desc,status,attempts,created = t
+
+        if created is None:
+            continue
+
         age = (datetime.now()-created).total_seconds()/60
 
         if age>120 and attempts==0:
@@ -237,24 +245,9 @@ def inactivity_check():
         send_whatsapp(YOUR_NUMBER,"👀 You’ve been quiet. Everything okay?")
 
 # =============================
-# 🌅 AUTONOMOUS SYSTEM
+# 🌅 AUTONOMOUS SYSTEM (DISABLED CALLER)
 # =============================
 def daily_updates():
-    now=datetime.now()
-
-    if now.hour==5 and now.minute==0:
-        planner()
-
-    if now.hour==21 and now.minute==0:
-        cursor.execute("SELECT goal,progress FROM goals WHERE user_id=%s",
-                       (YOUR_NUMBER,))
-        goals=cursor.fetchall()
-        if goals:
-            msg="🎯 Goals check:\n\n"
-            for g in goals:
-                msg+=f"• {g[0]} ({g[1]}%)\n"
-            send_whatsapp(YOUR_NUMBER,msg)
-
     intelligent_check()
     inactivity_check()
 
@@ -275,7 +268,6 @@ def whatsapp():
 
     update_last_seen(uid)
 
-    # 📅 Calendar trigger
     if any(x in msg.lower() for x in ["schedule","add","remind"]):
         try:
             create_event(msg)
@@ -285,11 +277,9 @@ def whatsapp():
         except:
             pass
 
-    # 🎙️ Voice
     if media and mtype and "audio" in mtype:
         msg += "\n" + transcribe_audio(media)
 
-    # 🖼️ OCR
     if media and mtype and mtype.startswith("image"):
         img=requests.get(media).content
         open("tmp.jpg","wb").write(img)
@@ -361,11 +351,11 @@ def test():
     return "OK"
 
 # =============================
-# SCHEDULER
+# SCHEDULER DISABLED
 # =============================
-sched=BackgroundScheduler()
-sched.add_job(daily_updates,"interval",minutes=1)
-sched.start()
+# sched=BackgroundScheduler()
+# sched.add_job(daily_updates,"interval",minutes=1)
+# sched.start()
 
 # =============================
 # RUN
@@ -373,4 +363,3 @@ sched.start()
 if __name__=="__main__":
     port=int(os.environ.get("PORT",8080))
     app.run(host="0.0.0.0",port=port)
-
