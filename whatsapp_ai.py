@@ -9,36 +9,9 @@ import requests
 from PIL import Image
 import pytesseract
 from dateutil import parser
-
-# =============================
-# 📅 GOOGLE CALENDAR SETUP
-# =============================
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from google_auth_oauthlib.flow import Flow
-
-GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
-GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET")
-TOKEN_FILE = "token.json"
-
-def get_calendar_service():
-    creds = Credentials.from_authorized_user_file(TOKEN_FILE)
-    return build("calendar", "v3", credentials=creds)
-
-def create_event(text):
-    service = get_calendar_service()
-    dt = parser.parse(text, fuzzy=True)
-
-    event = {
-        "summary": text,
-        "start": {"dateTime": dt.isoformat(), "timeZone": "Asia/Kolkata"},
-        "end": {
-            "dateTime": (dt + timedelta(hours=1)).isoformat(),
-            "timeZone": "Asia/Kolkata",
-        },
-    }
-
-    service.events().insert(calendarId="primary", body=event).execute()
 
 # =============================
 # CONFIG
@@ -50,56 +23,18 @@ TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 TWILIO_WHATSAPP_NUMBER = "whatsapp:+14155238886"
 YOUR_NUMBER = os.environ.get("YOUR_NUMBER")
 DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY")
+GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
+GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET")
+TOKEN_FILE = "token.json"
 
 pytesseract.pytesseract.tesseract_cmd = "/usr/bin/tesseract"
 
 # =============================
-# DATABASE
+# FLASK + CLIENTS
 # =============================
-conn = psycopg2.connect(DATABASE_URL)
-conn.autocommit = True
-cursor = conn.cursor()
-
-# =============================
-# MEMORY TABLES (SEMANTIC)
-# =============================
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS messages(
-    id SERIAL PRIMARY KEY,
-    user_id TEXT,
-    role TEXT,
-    content TEXT,
-    embedding REAL[],
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-)
-""")
-
-cursor.execute("""CREATE TABLE IF NOT EXISTS profile_memory(
-user_id TEXT PRIMARY KEY, facts TEXT)""")
-
-cursor.execute("""CREATE TABLE IF NOT EXISTS interests(
-user_id TEXT, interest TEXT, level INTEGER DEFAULT 1,
-PRIMARY KEY(user_id,interest))""")
-
-cursor.execute("""CREATE TABLE IF NOT EXISTS tasks(
-id SERIAL PRIMARY KEY, user_id TEXT, description TEXT,
-status TEXT DEFAULT 'pending', attempts INTEGER DEFAULT 0,
-created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
-
-cursor.execute("""CREATE TABLE IF NOT EXISTS goals(
-id SERIAL PRIMARY KEY, user_id TEXT, goal TEXT,
-progress INTEGER DEFAULT 0,
-created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
-
-cursor.execute("""CREATE TABLE IF NOT EXISTS last_seen(
-user_id TEXT PRIMARY KEY, last_time TIMESTAMP)""")
-
-# =============================
-# CLIENTS
-# =============================
+app = Flask(__name__)
 groq = Groq(api_key=GROQ_API_KEY)
 twilio = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-app = Flask(__name__)
 
 PERSONALITY = """
 You are Jarvis — calm, intelligent, loyal, proactive,
@@ -107,16 +42,53 @@ slightly witty, protective, and helpful.
 """
 
 # =============================
-# SENTENCE TRANSFORMERS – EMBEDDINGS
+# DATABASE UTILITY
 # =============================
-from sentence_transformers import SentenceTransformer
-import numpy as np
+def get_conn():
+    return psycopg2.connect(DATABASE_URL, sslmode="require")
 
-embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+def init_db():
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""CREATE TABLE IF NOT EXISTS memory(
+        user_id TEXT PRIMARY KEY, chat_history TEXT)""")
+    cur.execute("""CREATE TABLE IF NOT EXISTS profile_memory(
+        user_id TEXT PRIMARY KEY, facts TEXT)""")
+    cur.execute("""CREATE TABLE IF NOT EXISTS interests(
+        user_id TEXT, interest TEXT, level INTEGER DEFAULT 1,
+        PRIMARY KEY(user_id,interest))""")
+    cur.execute("""CREATE TABLE IF NOT EXISTS tasks(
+        id SERIAL PRIMARY KEY, user_id TEXT, description TEXT,
+        status TEXT DEFAULT 'pending', attempts INTEGER DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
+    cur.execute("""CREATE TABLE IF NOT EXISTS goals(
+        id SERIAL PRIMARY KEY, user_id TEXT, goal TEXT,
+        progress INTEGER DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
+    cur.execute("""CREATE TABLE IF NOT EXISTS last_seen(
+        user_id TEXT PRIMARY KEY, last_time TIMESTAMP)""")
+    conn.commit()
+    cur.close()
+    conn.close()
 
-def embed_text(text):
-    vec = embedding_model.encode(text)
-    return vec.tolist()  # store as array in Postgres
+init_db()
+
+# =============================
+# GOOGLE CALENDAR
+# =============================
+def get_calendar_service():
+    creds = Credentials.from_authorized_user_file(TOKEN_FILE)
+    return build("calendar", "v3", credentials=creds)
+
+def create_event(text):
+    service = get_calendar_service()
+    dt = parser.parse(text, fuzzy=True)
+    event = {
+        "summary": text,
+        "start": {"dateTime": dt.isoformat(), "timeZone": "Asia/Kolkata"},
+        "end": {"dateTime": (dt + timedelta(hours=1)).isoformat(), "timeZone": "Asia/Kolkata"},
+    }
+    service.events().insert(calendarId="primary", body=event).execute()
 
 # =============================
 # UTILITIES
@@ -124,51 +96,12 @@ def embed_text(text):
 def send_whatsapp(to, msg):
     twilio.messages.create(body=msg, from_=TWILIO_WHATSAPP_NUMBER, to=to)
 
-# =============================
-# MEMORY FUNCTIONS
-# =============================
-def add_message(uid, role, text):
-    vec = embed_text(text)
-    cursor.execute("""
-    INSERT INTO messages(user_id, role, content, embedding)
-    VALUES (%s,%s,%s,%s)
-    """, (uid, role, text, vec))
-
-def get_relevant_messages(uid, query, top_k=5):
-    query_vec = np.array(embed_text(query))
-    cursor.execute("""
-    SELECT content, embedding FROM messages
-    WHERE user_id=%s
-    """, (uid,))
-    rows = cursor.fetchall()
-    if not rows:
-        return []
-
-    sims = []
-    for content, emb in rows:
-        emb_vec = np.array(emb)
-        sim = np.dot(query_vec, emb_vec) / (np.linalg.norm(query_vec)*np.linalg.norm(emb_vec))
-        sims.append((sim, content))
-    sims.sort(reverse=True, key=lambda x: x[0])
-    return [x[1] for x in sims[:top_k]]
-
-def get_profile(uid):
-    cursor.execute("SELECT facts FROM profile_memory WHERE user_id=%s",(uid,))
-    r = cursor.fetchone()
-    return r[0] if r else ""
-
-def ask(prompt, facts="", uid=None):
-    context=""
-    if uid:
-        relevant=get_relevant_messages(uid, prompt, top_k=5)
-        if relevant:
-            context="Relevant past messages:\n" + "\n".join(relevant) + "\n\n"
-
+def ask(prompt, facts=""):
     try:
         r = groq.chat.completions.create(
             messages=[
                 {"role":"system","content":PERSONALITY + "\nFacts:\n" + facts},
-                {"role":"user","content":context + prompt}
+                {"role":"user","content":prompt}
             ],
             model="llama-3.1-8b-instant"
         )
@@ -178,117 +111,160 @@ def ask(prompt, facts="", uid=None):
         return "I'm a bit overloaded right now. Try again in a moment."
 
 # =============================
-# INTEREST LEARNING
+# DATABASE OPERATIONS
 # =============================
+def get_memory(uid):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT chat_history FROM memory WHERE user_id=%s", (uid,))
+    r = cur.fetchone()
+    cur.close()
+    conn.close()
+    return r[0] if r else ""
+
+def update_memory(uid, text):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO memory(user_id, chat_history) VALUES (%s,%s)
+        ON CONFLICT(user_id) DO UPDATE SET chat_history=EXCLUDED.chat_history
+    """, (uid, text))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+def get_profile(uid):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT facts FROM profile_memory WHERE user_id=%s", (uid,))
+    r = cur.fetchone()
+    cur.close()
+    conn.close()
+    return r[0] if r else ""
+
 def learn_interest(uid, msg):
     topics = ["sports","tech","finance","study","cars","entertainment"]
+    conn = get_conn()
+    cur = conn.cursor()
     for t in topics:
         if t in msg.lower():
-            cursor.execute("""
-            INSERT INTO interests VALUES(%s,%s,1)
-            ON CONFLICT(user_id,interest)
-            DO UPDATE SET level = interests.level + 1
-            """,(uid,t))
+            cur.execute("""
+                INSERT INTO interests(user_id, interest, level) VALUES(%s,%s,1)
+                ON CONFLICT(user_id,interest)
+                DO UPDATE SET level = interests.level + 1
+            """, (uid, t))
+    conn.commit()
+    cur.close()
+    conn.close()
 
-# =============================
-# LAST SEEN
-# =============================
 def update_last_seen(uid):
-    cursor.execute("""
-    INSERT INTO last_seen VALUES (%s,%s)
-    ON CONFLICT(user_id) DO UPDATE SET last_time=EXCLUDED.last_time
-    """,(uid, datetime.now()))
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO last_seen(user_id, last_time)
+        VALUES (%s,%s)
+        ON CONFLICT(user_id) DO UPDATE SET last_time=EXCLUDED.last_time
+    """, (uid, datetime.now()))
+    conn.commit()
+    cur.close()
+    conn.close()
 
 def get_last_seen(uid):
-    cursor.execute("SELECT last_time FROM last_seen WHERE user_id=%s",(uid,))
-    r = cursor.fetchone()
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT last_time FROM last_seen WHERE user_id=%s", (uid,))
+    r = cur.fetchone()
+    cur.close()
+    conn.close()
     return r[0] if r else None
 
+def add_task(uid, desc):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("INSERT INTO tasks(user_id, description) VALUES (%s,%s)", (uid, desc))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+def pending(uid):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM tasks WHERE user_id=%s AND status='pending'", (uid,))
+    r = cur.fetchall()
+    cur.close()
+    conn.close()
+    return r
+
+def add_goal(uid, goal):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("INSERT INTO goals(user_id, goal) VALUES (%s,%s)", (uid, goal))
+    conn.commit()
+    cur.close()
+    conn.close()
+
 # =============================
-# 🎙️ VOICE → DEEPGRAM
+# AUDIO / IMAGE
 # =============================
 def transcribe_audio(url):
     audio = requests.get(url).content
-    headers = {"Authorization": f"Token {DEEPGRAM_API_KEY}",
-               "Content-Type": "audio/ogg"}
-    r = requests.post("https://api.deepgram.com/v1/listen",
-                      headers=headers, data=audio)
+    headers = {"Authorization": f"Token {DEEPGRAM_API_KEY}", "Content-Type": "audio/ogg"}
+    r = requests.post("https://api.deepgram.com/v1/listen", headers=headers, data=audio)
     try:
         return r.json()["results"]["channels"][0]["alternatives"][0]["transcript"]
     except:
         return ""
 
 # =============================
-# TASK + GOALS
+# TASK / GOALS DETECTION
 # =============================
 def detect_task(msg):
     t = ask(f"Task to do later? Return task or NONE.\n{msg}")
     return t if t.upper()!="NONE" else None
 
-def add_task(uid, desc):
-    cursor.execute("INSERT INTO tasks(user_id,description) VALUES(%s,%s)",
-                   (uid,desc))
-
-def pending(uid):
-    cursor.execute("SELECT * FROM tasks WHERE user_id=%s AND status='pending'",
-                   (uid,))
-    return cursor.fetchall()
-
 def detect_goal(msg):
     g = ask(f"Long-term goal? Return goal or NONE.\n{msg}")
     return g if g.upper()!="NONE" else None
 
-def add_goal(uid, goal):
-    cursor.execute("INSERT INTO goals(user_id,goal) VALUES(%s,%s)",
-                   (uid,goal))
-
 # =============================
-# ⏰ MULTI-STAGE NAGGING
+# NAGGING + PLANNER
 # =============================
 def intelligent_check():
     tasks = pending(YOUR_NUMBER)
     for t in tasks:
-        tid,uid,desc,status,attempts,created = t
-
+        tid, uid, desc, status, attempts, created = t
         if created is None:
             continue
-
         age = (datetime.now()-created).total_seconds()/60
-
         if age>120 and attempts==0:
-            send_whatsapp(YOUR_NUMBER,f"⏳ Reminder: {desc}")
-            cursor.execute("UPDATE tasks SET attempts=1 WHERE id=%s",(tid,))
-
+            send_whatsapp(YOUR_NUMBER, f"⏳ Reminder: {desc}")
+            conn = get_conn(); cur = conn.cursor()
+            cur.execute("UPDATE tasks SET attempts=1 WHERE id=%s", (tid,))
+            conn.commit(); cur.close(); conn.close()
         elif age>360 and attempts==1:
-            send_whatsapp(YOUR_NUMBER,f"⚠️ Still not started: {desc}")
-            cursor.execute("UPDATE tasks SET attempts=2 WHERE id=%s",(tid,))
-
+            send_whatsapp(YOUR_NUMBER, f"⚠️ Still not started: {desc}")
+            conn = get_conn(); cur = conn.cursor()
+            cur.execute("UPDATE tasks SET attempts=2 WHERE id=%s", (tid,))
+            conn.commit(); cur.close(); conn.close()
         elif age>720 and attempts>=2:
-            send_whatsapp(YOUR_NUMBER,f"🚨 OVERDUE: {desc}")
-            cursor.execute("UPDATE tasks SET attempts=3 WHERE id=%s",(tid,))
+            send_whatsapp(YOUR_NUMBER, f"🚨 OVERDUE: {desc}")
+            conn = get_conn(); cur = conn.cursor()
+            cur.execute("UPDATE tasks SET attempts=3 WHERE id=%s", (tid,))
+            conn.commit(); cur.close(); conn.close()
 
-# =============================
-# 📅 ADVANCED PLANNER
-# =============================
 def planner():
     tasks = pending(YOUR_NUMBER)
     if tasks:
-        msg="📅 Plan for today:\n\n"
+        msg = "📅 Plan for today:\n\n"
         for t in tasks[:5]:
             msg += f"• {t[2]}\n"
-        send_whatsapp(YOUR_NUMBER,msg)
+        send_whatsapp(YOUR_NUMBER, msg)
 
-# =============================
-# 💤 INACTIVITY CHECK
-# =============================
 def inactivity_check():
     last = get_last_seen(YOUR_NUMBER)
-    if last and datetime.now()-last>timedelta(hours=8):
+    if last and datetime.now()-last > timedelta(hours=8):
         send_whatsapp(YOUR_NUMBER,"👀 You’ve been quiet. Everything okay?")
 
-# =============================
-# 🌅 AUTONOMOUS SYSTEM (DISABLED CALLER)
-# =============================
 def daily_updates():
     intelligent_check()
     inactivity_check()
@@ -296,14 +272,13 @@ def daily_updates():
 # =============================
 # WHATSAPP WEBHOOK
 # =============================
-@app.route("/whatsapp",methods=["POST"])
+@app.route("/whatsapp", methods=["POST"])
 def whatsapp():
-
-    f=request.form
-    uid=f.get("From")
-    msg=f.get("Body","")
-    media=f.get("MediaUrl0")
-    mtype=f.get("MediaContentType0")
+    f = request.form
+    uid = f.get("From")
+    msg = f.get("Body", "")
+    media = f.get("MediaUrl0")
+    mtype = f.get("MediaContentType0")
 
     if not uid:
         return "OK"
@@ -313,7 +288,7 @@ def whatsapp():
     if any(x in msg.lower() for x in ["schedule","add","remind"]):
         try:
             create_event(msg)
-            r=MessagingResponse()
+            r = MessagingResponse()
             r.message("📅 Event added to calendar.")
             return str(r)
         except:
@@ -323,41 +298,35 @@ def whatsapp():
         msg += "\n" + transcribe_audio(media)
 
     if media and mtype and mtype.startswith("image"):
-        img=requests.get(media).content
-        open("tmp.jpg","wb").write(img)
+        img = requests.get(media).content
+        open("tmp.jpg", "wb").write(img)
         msg += "\n" + pytesseract.image_to_string(Image.open("tmp.jpg"))
 
-    learn_interest(uid,msg)
+    learn_interest(uid, msg)
 
-    facts=get_profile(uid)
+    hist = get_memory(uid)
+    facts = get_profile(uid)
 
-    task=detect_task(msg)
-    if task: add_task(uid,task)
+    task = detect_task(msg)
+    if task: add_task(uid, task)
 
-    goal=detect_goal(msg)
-    if goal: add_goal(uid,goal)
+    goal = detect_goal(msg)
+    if goal: add_goal(uid, goal)
 
-    # -------------------------
-    # add incoming user message to DB
-    add_message(uid, "user", msg)
+    reply = ask(hist + "\nUser:" + msg + "\nJarvis:", facts)
 
-    # -------------------------
-    reply=ask(msg, facts, uid=uid)
+    update_memory(uid, hist + f"\nUser:{msg}\nJarvis:{reply}")
 
-    # -------------------------
-    # add Jarvis reply to DB
-    add_message(uid, "assistant", reply)
-
-    r=MessagingResponse()
+    r = MessagingResponse()
     r.message(reply)
     return str(r)
 
 # =============================
-# 🔐 GOOGLE AUTH ROUTES
+# GOOGLE AUTH
 # =============================
 @app.route("/authorize")
 def authorize():
-    flow=Flow.from_client_config(
+    flow = Flow.from_client_config(
         {"web":{
             "client_id":GOOGLE_CLIENT_ID,
             "client_secret":GOOGLE_CLIENT_SECRET,
@@ -368,12 +337,12 @@ def authorize():
             ]}},
         scopes=["https://www.googleapis.com/auth/calendar"])
     flow.redirect_uri="https://whatsapp-ai-bot-production-bc04.up.railway.app/callback"
-    auth_url,_=flow.authorization_url(prompt="consent")
+    auth_url, _ = flow.authorization_url(prompt="consent")
     return f'<a href="{auth_url}">Authorize Calendar</a>'
 
 @app.route("/callback")
 def callback():
-    flow=Flow.from_client_config(
+    flow = Flow.from_client_config(
         {"web":{
             "client_id":GOOGLE_CLIENT_ID,
             "client_secret":GOOGLE_CLIENT_SECRET,
@@ -385,8 +354,8 @@ def callback():
         scopes=["https://www.googleapis.com/auth/calendar"])
     flow.redirect_uri="https://whatsapp-ai-bot-production-bc04.up.railway.app/callback"
     flow.fetch_token(authorization_response=request.url)
-    creds=flow.credentials
-    with open("token.json","w") as f:
+    creds = flow.credentials
+    with open("token.json", "w") as f:
         f.write(creds.to_json())
     return "✅ Calendar connected!"
 
@@ -401,6 +370,6 @@ def test():
 # =============================
 # RUN
 # =============================
-if __name__=="__main__":
-    port=int(os.environ.get("PORT",8080))
-    app.run(host="0.0.0.0",port=port)
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
