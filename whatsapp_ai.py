@@ -4,7 +4,6 @@ from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
 from twilio.rest import Client
 from groq import Groq
-# from apscheduler.schedulers.background import BackgroundScheduler  # DISABLED
 from datetime import datetime, timedelta
 import requests
 from PIL import Image
@@ -61,8 +60,19 @@ conn = psycopg2.connect(DATABASE_URL)
 conn.autocommit = True
 cursor = conn.cursor()
 
-cursor.execute("""CREATE TABLE IF NOT EXISTS memory(
-user_id TEXT PRIMARY KEY, chat_history TEXT)""")
+# =============================
+# MEMORY TABLES (SEMANTIC)
+# =============================
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS messages(
+    id SERIAL PRIMARY KEY,
+    user_id TEXT,
+    role TEXT,
+    content TEXT,
+    embedding REAL[],
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)
+""")
 
 cursor.execute("""CREATE TABLE IF NOT EXISTS profile_memory(
 user_id TEXT PRIMARY KEY, facts TEXT)""")
@@ -97,17 +107,68 @@ slightly witty, protective, and helpful.
 """
 
 # =============================
+# SENTENCE TRANSFORMERS – EMBEDDINGS
+# =============================
+from sentence_transformers import SentenceTransformer
+import numpy as np
+
+embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+
+def embed_text(text):
+    vec = embedding_model.encode(text)
+    return vec.tolist()  # store as array in Postgres
+
+# =============================
 # UTILITIES
 # =============================
 def send_whatsapp(to, msg):
     twilio.messages.create(body=msg, from_=TWILIO_WHATSAPP_NUMBER, to=to)
 
-def ask(prompt, facts=""):
+# =============================
+# MEMORY FUNCTIONS
+# =============================
+def add_message(uid, role, text):
+    vec = embed_text(text)
+    cursor.execute("""
+    INSERT INTO messages(user_id, role, content, embedding)
+    VALUES (%s,%s,%s,%s)
+    """, (uid, role, text, vec))
+
+def get_relevant_messages(uid, query, top_k=5):
+    query_vec = np.array(embed_text(query))
+    cursor.execute("""
+    SELECT content, embedding FROM messages
+    WHERE user_id=%s
+    """, (uid,))
+    rows = cursor.fetchall()
+    if not rows:
+        return []
+
+    sims = []
+    for content, emb in rows:
+        emb_vec = np.array(emb)
+        sim = np.dot(query_vec, emb_vec) / (np.linalg.norm(query_vec)*np.linalg.norm(emb_vec))
+        sims.append((sim, content))
+    sims.sort(reverse=True, key=lambda x: x[0])
+    return [x[1] for x in sims[:top_k]]
+
+def get_profile(uid):
+    cursor.execute("SELECT facts FROM profile_memory WHERE user_id=%s",(uid,))
+    r = cursor.fetchone()
+    return r[0] if r else ""
+
+def ask(prompt, facts="", uid=None):
+    context=""
+    if uid:
+        relevant=get_relevant_messages(uid, prompt, top_k=5)
+        if relevant:
+            context="Relevant past messages:\n" + "\n".join(relevant) + "\n\n"
+
     try:
         r = groq.chat.completions.create(
             messages=[
                 {"role":"system","content":PERSONALITY + "\nFacts:\n" + facts},
-                {"role":"user","content":prompt}
+                {"role":"user","content":context + prompt}
             ],
             model="llama-3.1-8b-instant"
         )
@@ -115,25 +176,6 @@ def ask(prompt, facts=""):
     except Exception as e:
         print("Groq error:", e)
         return "I'm a bit overloaded right now. Try again in a moment."
-
-# =============================
-# MEMORY
-# =============================
-def get_memory(uid):
-    cursor.execute("SELECT chat_history FROM memory WHERE user_id=%s",(uid,))
-    r = cursor.fetchone()
-    return r[0] if r else ""
-
-def update_memory(uid, text):
-    cursor.execute("""
-    INSERT INTO memory VALUES (%s,%s)
-    ON CONFLICT(user_id) DO UPDATE SET chat_history=EXCLUDED.chat_history
-    """,(uid,text))
-
-def get_profile(uid):
-    cursor.execute("SELECT facts FROM profile_memory WHERE user_id=%s",(uid,))
-    r = cursor.fetchone()
-    return r[0] if r else ""
 
 # =============================
 # INTEREST LEARNING
@@ -287,7 +329,6 @@ def whatsapp():
 
     learn_interest(uid,msg)
 
-    hist=get_memory(uid)
     facts=get_profile(uid)
 
     task=detect_task(msg)
@@ -296,9 +337,16 @@ def whatsapp():
     goal=detect_goal(msg)
     if goal: add_goal(uid,goal)
 
-    reply=ask(hist+"\nUser:"+msg+"\nJarvis:",facts)
+    # -------------------------
+    # add incoming user message to DB
+    add_message(uid, "user", msg)
 
-    update_memory(uid,hist+f"\nUser:{msg}\nJarvis:{reply}")
+    # -------------------------
+    reply=ask(msg, facts, uid=uid)
+
+    # -------------------------
+    # add Jarvis reply to DB
+    add_message(uid, "assistant", reply)
 
     r=MessagingResponse()
     r.message(reply)
@@ -349,13 +397,6 @@ def callback():
 def test():
     send_whatsapp(YOUR_NUMBER,"Jarvis FULL CORE online ⚡")
     return "OK"
-
-# =============================
-# SCHEDULER DISABLED
-# =============================
-# sched=BackgroundScheduler()
-# sched.add_job(daily_updates,"interval",minutes=1)
-# sched.start()
 
 # =============================
 # RUN
