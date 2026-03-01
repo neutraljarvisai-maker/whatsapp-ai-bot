@@ -4,7 +4,6 @@ from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
 from twilio.rest import Client
 from groq import Groq
-# from apscheduler.schedulers.background import BackgroundScheduler  # DISABLED
 from datetime import datetime, timedelta
 import requests
 from PIL import Image
@@ -53,18 +52,47 @@ DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY")
 pytesseract.pytesseract.tesseract_cmd = "/usr/bin/tesseract"
 
 # =============================
-# DATABASE UTILITIES
+# 🔐 SAFE DATABASE LAYER
 # =============================
+def get_connection():
+    return psycopg2.connect(
+        DATABASE_URL,
+        sslmode="require",
+        connect_timeout=10,
+        keepalives=1,
+        keepalives_idle=30,
+        keepalives_interval=10,
+        keepalives_count=5,
+    )
+
 def run_query(query, params=(), fetch=False):
+    conn = None
+    cursor = None
     try:
-        with psycopg2.connect(DATABASE_URL, sslmode="require") as conn:
-            with conn.cursor() as cursor:
-                cursor.execute(query, params)
-                if fetch:
-                    return cursor.fetchall()
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(query, params)
+
+        result = cursor.fetchall() if fetch else None
+        conn.commit()
+        return result
+
     except Exception as e:
-        print("DB error:", e)
+        print("DB ERROR:", e)
+        if conn:
+            try:
+                conn.rollback()
+            except:
+                pass
         return [] if fetch else None
+
+    finally:
+        if cursor:
+            try: cursor.close()
+            except: pass
+        if conn:
+            try: conn.close()
+            except: pass
 
 # =============================
 # INIT TABLES
@@ -75,9 +103,11 @@ tables = [
     """CREATE TABLE IF NOT EXISTS interests(user_id TEXT, interest TEXT, level INTEGER DEFAULT 1,
        PRIMARY KEY(user_id,interest))""",
     """CREATE TABLE IF NOT EXISTS tasks(id SERIAL PRIMARY KEY, user_id TEXT, description TEXT,
-       status TEXT DEFAULT 'pending', attempts INTEGER DEFAULT 0, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
+       status TEXT DEFAULT 'pending', attempts INTEGER DEFAULT 0,
+       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
     """CREATE TABLE IF NOT EXISTS goals(id SERIAL PRIMARY KEY, user_id TEXT, goal TEXT,
-       progress INTEGER DEFAULT 0, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
+       progress INTEGER DEFAULT 0,
+       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
     """CREATE TABLE IF NOT EXISTS last_seen(user_id TEXT PRIMARY KEY, last_time TIMESTAMP)"""
 ]
 
@@ -114,23 +144,23 @@ def ask(prompt, facts=""):
         return r.choices[0].message.content.strip()
     except Exception as e:
         print("Groq error:", e)
-        return "I'm a bit overloaded right now. Try again in a moment."
+        return "System overload. Try again."
 
 # =============================
 # MEMORY
 # =============================
 def get_memory(uid):
-    r = run_query("SELECT chat_history FROM memory WHERE user_id=%s", (uid,), fetch=True)
+    r = run_query("SELECT chat_history FROM memory WHERE user_id=%s", (uid,), True)
     return r[0][0] if r else ""
 
 def update_memory(uid, text):
     run_query("""
-        INSERT INTO memory(user_id, chat_history) VALUES (%s, %s)
+        INSERT INTO memory(user_id, chat_history) VALUES (%s,%s)
         ON CONFLICT(user_id) DO UPDATE SET chat_history=EXCLUDED.chat_history
     """, (uid, text))
 
 def get_profile(uid):
-    r = run_query("SELECT facts FROM profile_memory WHERE user_id=%s", (uid,), fetch=True)
+    r = run_query("SELECT facts FROM profile_memory WHERE user_id=%s", (uid,), True)
     return r[0][0] if r else ""
 
 # =============================
@@ -141,100 +171,66 @@ def learn_interest(uid, msg):
     for t in topics:
         if t in msg.lower():
             run_query("""
-                INSERT INTO interests(user_id, interest, level) VALUES(%s,%s,1)
-                ON CONFLICT(user_id,interest) DO UPDATE SET level = interests.level + 1
+                INSERT INTO interests(user_id, interest, level)
+                VALUES(%s,%s,1)
+                ON CONFLICT(user_id,interest)
+                DO UPDATE SET level = interests.level + 1
             """, (uid, t))
-
-# =============================
-# LAST SEEN
-# =============================
-def update_last_seen(uid):
-    run_query("""
-        INSERT INTO last_seen(user_id, last_time) VALUES (%s,%s)
-        ON CONFLICT(user_id) DO UPDATE SET last_time=EXCLUDED.last_time
-    """, (uid, datetime.now()))
-
-def get_last_seen(uid):
-    r = run_query("SELECT last_time FROM last_seen WHERE user_id=%s", (uid,), fetch=True)
-    return r[0][0] if r else None
-
-# =============================
-# 🎙️ VOICE → DEEPGRAM
-# =============================
-def transcribe_audio(url):
-    audio = requests.get(url).content
-    headers = {"Authorization": f"Token {DEEPGRAM_API_KEY}",
-               "Content-Type": "audio/ogg"}
-    r = requests.post("https://api.deepgram.com/v1/listen", headers=headers, data=audio)
-    try:
-        return r.json()["results"]["channels"][0]["alternatives"][0]["transcript"]
-    except:
-        return ""
 
 # =============================
 # TASK + GOALS
 # =============================
 def detect_task(msg):
     t = ask(f"Task to do later? Return task or NONE.\n{msg}")
-    return t if t.upper()!="NONE" else None
+    return t if t.upper() != "NONE" else None
 
 def add_task(uid, desc):
     run_query("INSERT INTO tasks(user_id, description) VALUES(%s,%s)", (uid, desc))
 
 def pending(uid):
-    return run_query("SELECT * FROM tasks WHERE user_id=%s AND status='pending'", (uid,), fetch=True)
+    return run_query(
+        "SELECT * FROM tasks WHERE user_id=%s AND status='pending'",
+        (uid,), True)
 
 def detect_goal(msg):
     g = ask(f"Long-term goal? Return goal or NONE.\n{msg}")
-    return g if g.upper()!="NONE" else None
+    return g if g.upper() != "NONE" else None
 
 def add_goal(uid, goal):
     run_query("INSERT INTO goals(user_id, goal) VALUES(%s,%s)", (uid, goal))
 
 # =============================
-# ⏰ MULTI-STAGE NAGGING
+# LAST SEEN
 # =============================
-def intelligent_check():
-    tasks = pending(YOUR_NUMBER)
-    for t in tasks:
-        tid,uid,desc,status,attempts,created = t
-        if created is None: continue
-        age = (datetime.now()-created).total_seconds()/60
-        if age>120 and attempts==0:
-            send_whatsapp(YOUR_NUMBER,f"⏳ Reminder: {desc}")
-            run_query("UPDATE tasks SET attempts=1 WHERE id=%s",(tid,))
-        elif age>360 and attempts==1:
-            send_whatsapp(YOUR_NUMBER,f"⚠️ Still not started: {desc}")
-            run_query("UPDATE tasks SET attempts=2 WHERE id=%s",(tid,))
-        elif age>720 and attempts>=2:
-            send_whatsapp(YOUR_NUMBER,f"🚨 OVERDUE: {desc}")
-            run_query("UPDATE tasks SET attempts=3 WHERE id=%s",(tid,))
+def update_last_seen(uid):
+    run_query("""
+        INSERT INTO last_seen(user_id, last_time)
+        VALUES (%s,%s)
+        ON CONFLICT(user_id)
+        DO UPDATE SET last_time=EXCLUDED.last_time
+    """, (uid, datetime.now()))
+
+def get_last_seen(uid):
+    r = run_query(
+        "SELECT last_time FROM last_seen WHERE user_id=%s",
+        (uid,), True)
+    return r[0][0] if r else None
 
 # =============================
-# 📅 ADVANCED PLANNER
+# VOICE → DEEPGRAM
 # =============================
-def planner():
-    tasks = pending(YOUR_NUMBER)
-    if tasks:
-        msg="📅 Plan for today:\n\n"
-        for t in tasks[:5]:
-            msg += f"• {t[2]}\n"
-        send_whatsapp(YOUR_NUMBER,msg)
-
-# =============================
-# 💤 INACTIVITY CHECK
-# =============================
-def inactivity_check():
-    last = get_last_seen(YOUR_NUMBER)
-    if last and datetime.now()-last>timedelta(hours=8):
-        send_whatsapp(YOUR_NUMBER,"👀 You’ve been quiet. Everything okay?")
-
-# =============================
-# 🌅 AUTONOMOUS SYSTEM (DISABLED CALLER)
-# =============================
-def daily_updates():
-    intelligent_check()
-    inactivity_check()
+def transcribe_audio(url):
+    audio = requests.get(url).content
+    headers = {
+        "Authorization": f"Token {DEEPGRAM_API_KEY}",
+        "Content-Type": "audio/ogg"
+    }
+    r = requests.post("https://api.deepgram.com/v1/listen",
+                      headers=headers, data=audio)
+    try:
+        return r.json()["results"]["channels"][0]["alternatives"][0]["transcript"]
+    except:
+        return ""
 
 # =============================
 # WHATSAPP WEBHOOK
@@ -247,93 +243,54 @@ def whatsapp():
     media = f.get("MediaUrl0")
     mtype = f.get("MediaContentType0")
 
-    if not uid: return "OK"
+    if not uid:
+        return "OK"
 
     update_last_seen(uid)
 
+    # Calendar
     if any(x in msg.lower() for x in ["schedule","add","remind"]):
         try:
             create_event(msg)
             r = MessagingResponse()
-            r.message("📅 Event added to calendar.")
+            r.message("📅 Event added.")
             return str(r)
         except:
             pass
 
+    # Voice
     if media and mtype and "audio" in mtype:
         msg += "\n" + transcribe_audio(media)
 
+    # Image OCR
     if media and mtype and mtype.startswith("image"):
         img = requests.get(media).content
         open("tmp.jpg","wb").write(img)
         msg += "\n" + pytesseract.image_to_string(Image.open("tmp.jpg"))
 
-    learn_interest(uid,msg)
+    learn_interest(uid, msg)
+
     hist = get_memory(uid)
     facts = get_profile(uid)
 
     task = detect_task(msg)
-    if task: add_task(uid,task)
+    if task:
+        add_task(uid, task)
 
     goal = detect_goal(msg)
-    if goal: add_goal(uid,goal)
+    if goal:
+        add_goal(uid, goal)
 
     reply = ask(hist+"\nUser:"+msg+"\nJarvis:", facts)
-    update_memory(uid,hist+f"\nUser:{msg}\nJarvis:{reply}")
+    update_memory(uid, hist+f"\nUser:{msg}\nJarvis:{reply}")
 
     r = MessagingResponse()
     r.message(reply)
     return str(r)
 
 # =============================
-# 🔐 GOOGLE AUTH ROUTES
-# =============================
-@app.route("/authorize")
-def authorize():
-    flow = Flow.from_client_config(
-        {"web":{
-            "client_id":GOOGLE_CLIENT_ID,
-            "client_secret":GOOGLE_CLIENT_SECRET,
-            "auth_uri":"https://accounts.google.com/o/oauth2/auth",
-            "token_uri":"https://oauth2.googleapis.com/token",
-            "redirect_uris":["https://whatsapp-ai-bot-production-bc04.up.railway.app/callback"]
-        }},
-        scopes=["https://www.googleapis.com/auth/calendar"]
-    )
-    flow.redirect_uri = "https://whatsapp-ai-bot-production-bc04.up.railway.app/callback"
-    auth_url,_ = flow.authorization_url(prompt="consent")
-    return f'<a href="{auth_url}">Authorize Calendar</a>'
-
-@app.route("/callback")
-def callback():
-    flow = Flow.from_client_config(
-        {"web":{
-            "client_id":GOOGLE_CLIENT_ID,
-            "client_secret":GOOGLE_CLIENT_SECRET,
-            "auth_uri":"https://accounts.google.com/o/oauth2/auth",
-            "token_uri":"https://oauth2.googleapis.com/token",
-            "redirect_uris":["https://whatsapp-ai-bot-production-bc04.up.railway.app/callback"]
-        }},
-        scopes=["https://www.googleapis.com/auth/calendar"]
-    )
-    flow.redirect_uri = "https://whatsapp-ai-bot-production-bc04.up.railway.app/callback"
-    flow.fetch_token(authorization_response=request.url)
-    creds = flow.credentials
-    with open("token.json","w") as f:
-        f.write(creds.to_json())
-    return "✅ Calendar connected!"
-
-# =============================
-# TEST ROUTE
-# =============================
-@app.route("/test-send")
-def test():
-    send_whatsapp(YOUR_NUMBER,"Jarvis FULL CORE online ⚡")
-    return "OK"
-
-# =============================
 # RUN
 # =============================
-if __name__=="__main__":
-    port=int(os.environ.get("PORT",8080))
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT",8080))
     app.run(host="0.0.0.0", port=port)
