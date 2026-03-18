@@ -15,10 +15,7 @@ from dateutil import parser
 # =============================
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
-from google_auth_oauthlib.flow import Flow
 
-GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
-GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET")
 TOKEN_FILE = "token.json"
 
 def get_calendar_service():
@@ -46,37 +43,38 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 TWILIO_WHATSAPP_NUMBER = "whatsapp:+14155238886"
-YOUR_NUMBER = os.environ.get("YOUR_NUMBER")
 DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY")
 
 pytesseract.pytesseract.tesseract_cmd = "/usr/bin/tesseract"
 
 # =============================
-# 🔐 SAFE DATABASE LAYER (FIXED)
+# 🔐 BULLETPROOF DB LAYER
 # =============================
-def get_connection():
-    return psycopg2.connect(
-        DATABASE_URL,
-        sslmode="require",
-        connect_timeout=10,
-        keepalives=1,
-        keepalives_idle=30,
-        keepalives_interval=10,
-        keepalives_count=5,
-    )
-
 def run_query(query, params=(), fetch=False):
-    def execute_once():
+    for attempt in range(2):  # retry max 2 times
         conn = None
         cursor = None
         try:
-            conn = get_connection()
+            conn = psycopg2.connect(DATABASE_URL, sslmode="require")
             cursor = conn.cursor()
+
             cursor.execute(query, params)
 
             result = cursor.fetchall() if fetch else None
             conn.commit()
             return result
+
+        except psycopg2.InterfaceError as e:
+            print("Retrying DB (cursor issue):", e)
+            # retry once automatically
+            continue
+
+        except Exception as e:
+            print("DB ERROR:", e)
+            if conn:
+                try: conn.rollback()
+                except: pass
+            return [] if fetch else None
 
         finally:
             if cursor:
@@ -86,20 +84,8 @@ def run_query(query, params=(), fetch=False):
                 try: conn.close()
                 except: pass
 
-    try:
-        return execute_once()
+    return [] if fetch else None
 
-    except psycopg2.InterfaceError as e:
-        print("Retrying DB due to closed cursor:", e)
-        try:
-            return execute_once()
-        except Exception as e2:
-            print("DB ERROR (retry failed):", e2)
-            return [] if fetch else None
-
-    except Exception as e:
-        print("DB ERROR:", e)
-        return [] if fetch else None
 
 # =============================
 # INIT TABLES
@@ -136,9 +122,6 @@ slightly witty, protective, and helpful.
 # =============================
 # UTILITIES
 # =============================
-def send_whatsapp(to, msg):
-    twilio.messages.create(body=msg, from_=TWILIO_WHATSAPP_NUMBER, to=to)
-
 def ask(prompt, facts=""):
     try:
         r = groq.chat.completions.create(
@@ -171,7 +154,7 @@ def get_profile(uid):
     return r[0][0] if r else ""
 
 # =============================
-# INTEREST LEARNING
+# INTEREST
 # =============================
 def learn_interest(uid, msg):
     topics = ["sports","tech","finance","study","cars","entertainment"]
@@ -185,7 +168,7 @@ def learn_interest(uid, msg):
             """, (uid, t))
 
 # =============================
-# TASK + GOALS
+# TASKS + GOALS
 # =============================
 def detect_task(msg):
     t = ask(f"Task to do later? Return task or NONE.\n{msg}")
@@ -193,11 +176,6 @@ def detect_task(msg):
 
 def add_task(uid, desc):
     run_query("INSERT INTO tasks(user_id, description) VALUES(%s,%s)", (uid, desc))
-
-def pending(uid):
-    return run_query(
-        "SELECT * FROM tasks WHERE user_id=%s AND status='pending'",
-        (uid,), True)
 
 def detect_goal(msg):
     g = ask(f"Long-term goal? Return goal or NONE.\n{msg}")
@@ -207,7 +185,7 @@ def add_goal(uid, goal):
     run_query("INSERT INTO goals(user_id, goal) VALUES(%s,%s)", (uid, goal))
 
 # =============================
-# LAST SEEN
+# LAST SEEN (SAFE NOW)
 # =============================
 def update_last_seen(uid):
     run_query("""
@@ -217,83 +195,62 @@ def update_last_seen(uid):
         DO UPDATE SET last_time=EXCLUDED.last_time
     """, (uid, datetime.now()))
 
-def get_last_seen(uid):
-    r = run_query(
-        "SELECT last_time FROM last_seen WHERE user_id=%s",
-        (uid,), True)
-    return r[0][0] if r else None
-
 # =============================
-# VOICE → DEEPGRAM
+# MEDIA
 # =============================
 def transcribe_audio(url):
-    audio = requests.get(url).content
-    headers = {
-        "Authorization": f"Token {DEEPGRAM_API_KEY}",
-        "Content-Type": "audio/ogg"
-    }
-    r = requests.post("https://api.deepgram.com/v1/listen",
-                      headers=headers, data=audio)
     try:
+        audio = requests.get(url).content
+        headers = {
+            "Authorization": f"Token {DEEPGRAM_API_KEY}",
+            "Content-Type": "audio/ogg"
+        }
+        r = requests.post("https://api.deepgram.com/v1/listen",
+                          headers=headers, data=audio)
         return r.json()["results"]["channels"][0]["alternatives"][0]["transcript"]
     except:
         return ""
 
 # =============================
-# WHATSAPP WEBHOOK
+# WEBHOOK
 # =============================
 @app.route("/whatsapp", methods=["POST"])
 def whatsapp():
-    f = request.form
-    uid = f.get("From")
-    msg = f.get("Body","")
-    media = f.get("MediaUrl0")
-    mtype = f.get("MediaContentType0")
+    try:
+        f = request.form
+        uid = f.get("From")
+        msg = f.get("Body","")
 
-    if not uid:
-        return "OK"
+        if not uid:
+            return "OK"
 
-    update_last_seen(uid)
+        update_last_seen(uid)
 
-    # Calendar
-    if any(x in msg.lower() for x in ["schedule","add","remind"]):
-        try:
-            create_event(msg)
-            r = MessagingResponse()
-            r.message("📅 Event added.")
-            return str(r)
-        except:
-            pass
+        learn_interest(uid, msg)
 
-    # Voice
-    if media and mtype and "audio" in mtype:
-        msg += "\n" + transcribe_audio(media)
+        hist = get_memory(uid)
+        facts = get_profile(uid)
 
-    # Image OCR
-    if media and mtype and mtype.startswith("image"):
-        img = requests.get(media).content
-        open("tmp.jpg","wb").write(img)
-        msg += "\n" + pytesseract.image_to_string(Image.open("tmp.jpg"))
+        task = detect_task(msg)
+        if task:
+            add_task(uid, task)
 
-    learn_interest(uid, msg)
+        goal = detect_goal(msg)
+        if goal:
+            add_goal(uid, goal)
 
-    hist = get_memory(uid)
-    facts = get_profile(uid)
+        reply = ask(hist+"\nUser:"+msg+"\nJarvis:", facts)
+        update_memory(uid, hist+f"\nUser:{msg}\nJarvis:{reply}")
 
-    task = detect_task(msg)
-    if task:
-        add_task(uid, task)
+        r = MessagingResponse()
+        r.message(reply)
+        return str(r)
 
-    goal = detect_goal(msg)
-    if goal:
-        add_goal(uid, goal)
-
-    reply = ask(hist+"\nUser:"+msg+"\nJarvis:", facts)
-    update_memory(uid, hist+f"\nUser:{msg}\nJarvis:{reply}")
-
-    r = MessagingResponse()
-    r.message(reply)
-    return str(r)
+    except Exception as e:
+        print("CRASH PREVENTED:", e)
+        r = MessagingResponse()
+        r.message("⚠️ Temporary issue. Try again.")
+        return str(r)
 
 # =============================
 # RUN
