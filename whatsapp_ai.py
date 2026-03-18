@@ -51,29 +51,46 @@ pytesseract.pytesseract.tesseract_cmd = "/usr/bin/tesseract"
 # 🔐 BULLETPROOF DB LAYER
 # =============================
 def run_query(query, params=(), fetch=False):
-    for attempt in range(2):  # retry max 2 times
+    for attempt in range(2):
         conn = None
         cursor = None
+
         try:
             conn = psycopg2.connect(DATABASE_URL, sslmode="require")
             cursor = conn.cursor()
 
             cursor.execute(query, params)
 
-            result = cursor.fetchall() if fetch else None
+            if fetch:
+                result = cursor.fetchall()
+            else:
+                result = None
+
             conn.commit()
             return result
 
         except psycopg2.InterfaceError as e:
             print("Retrying DB (cursor issue):", e)
-            # retry once automatically
+
+            # FORCE CLEANUP BEFORE RETRY
+            if cursor:
+                try: cursor.close()
+                except: pass
+            if conn:
+                try: conn.close()
+                except: pass
+
+            if attempt == 1:
+                return [] if fetch else None
             continue
 
         except Exception as e:
             print("DB ERROR:", e)
+
             if conn:
                 try: conn.rollback()
                 except: pass
+
             return [] if fetch else None
 
         finally:
@@ -85,7 +102,6 @@ def run_query(query, params=(), fetch=False):
                 except: pass
 
     return [] if fetch else None
-
 
 # =============================
 # INIT TABLES
@@ -134,7 +150,7 @@ def ask(prompt, facts=""):
         return r.choices[0].message.content.strip()
     except Exception as e:
         print("Groq error:", e)
-        return "System overload. Try again."
+        return "⚠️ AI temporarily unavailable."
 
 # =============================
 # MEMORY
@@ -185,15 +201,18 @@ def add_goal(uid, goal):
     run_query("INSERT INTO goals(user_id, goal) VALUES(%s,%s)", (uid, goal))
 
 # =============================
-# LAST SEEN (SAFE NOW)
+# LAST SEEN
 # =============================
 def update_last_seen(uid):
-    run_query("""
-        INSERT INTO last_seen(user_id, last_time)
-        VALUES (%s,%s)
-        ON CONFLICT(user_id)
-        DO UPDATE SET last_time=EXCLUDED.last_time
-    """, (uid, datetime.now()))
+    try:
+        run_query("""
+            INSERT INTO last_seen(user_id, last_time)
+            VALUES (%s,%s)
+            ON CONFLICT(user_id)
+            DO UPDATE SET last_time=EXCLUDED.last_time
+        """, (uid, datetime.now()))
+    except Exception as e:
+        print("LAST_SEEN FAIL:", e)
 
 # =============================
 # MEDIA
@@ -225,7 +244,6 @@ def whatsapp():
             return "OK"
 
         update_last_seen(uid)
-
         learn_interest(uid, msg)
 
         hist = get_memory(uid)
@@ -239,8 +257,9 @@ def whatsapp():
         if goal:
             add_goal(uid, goal)
 
-        reply = ask(hist+"\nUser:"+msg+"\nJarvis:", facts)
-        update_memory(uid, hist+f"\nUser:{msg}\nJarvis:{reply}")
+        reply = ask(hist + "\nUser:" + msg + "\nJarvis:", facts)
+
+        update_memory(uid, hist + f"\nUser:{msg}\nJarvis:{reply}")
 
         r = MessagingResponse()
         r.message(reply)
@@ -256,5 +275,5 @@ def whatsapp():
 # RUN
 # =============================
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT",8080))
+    port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
