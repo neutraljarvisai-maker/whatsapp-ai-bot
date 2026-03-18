@@ -52,7 +52,7 @@ DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY")
 pytesseract.pytesseract.tesseract_cmd = "/usr/bin/tesseract"
 
 # =============================
-# 🔐 SAFE DATABASE LAYER
+# 🔐 SAFE DATABASE LAYER (FIXED)
 # =============================
 def get_connection():
     return psycopg2.connect(
@@ -66,33 +66,40 @@ def get_connection():
     )
 
 def run_query(query, params=(), fetch=False):
-    conn = None
-    cursor = None
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute(query, params)
+    def execute_once():
+        conn = None
+        cursor = None
+        try:
+            conn = get_connection()
+            cursor = conn.cursor()
+            cursor.execute(query, params)
 
-        result = cursor.fetchall() if fetch else None
-        conn.commit()
-        return result
+            result = cursor.fetchall() if fetch else None
+            conn.commit()
+            return result
+
+        finally:
+            if cursor:
+                try: cursor.close()
+                except: pass
+            if conn:
+                try: conn.close()
+                except: pass
+
+    try:
+        return execute_once()
+
+    except psycopg2.InterfaceError as e:
+        print("Retrying DB due to closed cursor:", e)
+        try:
+            return execute_once()
+        except Exception as e2:
+            print("DB ERROR (retry failed):", e2)
+            return [] if fetch else None
 
     except Exception as e:
         print("DB ERROR:", e)
-        if conn:
-            try:
-                conn.rollback()
-            except:
-                pass
         return [] if fetch else None
-
-    finally:
-        if cursor:
-            try: cursor.close()
-            except: pass
-        if conn:
-            try: conn.close()
-            except: pass
 
 # =============================
 # INIT TABLES
