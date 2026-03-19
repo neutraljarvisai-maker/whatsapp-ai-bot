@@ -1,3 +1,5 @@
+print("🚀 VERSION 3 DEPLOYED")
+
 import os
 import psycopg2
 from flask import Flask, request
