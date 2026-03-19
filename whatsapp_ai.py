@@ -1,4 +1,4 @@
-print("🚀 VERSION 3 DEPLOYED")
+print("🚀 VERSION 4 - MEMORY CONNECTED")
 
 import os
 import psycopg2
@@ -47,6 +47,9 @@ TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 TWILIO_WHATSAPP_NUMBER = "whatsapp:+14155238886"
 DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY")
 
+# 🔥 MEMORY SERVER URL
+MEMORY_SERVER_URL = "https://your-memory-server.up.railway.app"
+
 pytesseract.pytesseract.tesseract_cmd = "/usr/bin/tesseract"
 
 # =============================
@@ -63,36 +66,18 @@ def run_query(query, params=(), fetch=False):
 
             cursor.execute(query, params)
 
-            if fetch:
-                result = cursor.fetchall()
-            else:
-                result = None
-
+            result = cursor.fetchall() if fetch else None
             conn.commit()
             return result
 
         except psycopg2.InterfaceError as e:
             print("Retrying DB (cursor issue):", e)
-
-            # FORCE CLEANUP BEFORE RETRY
-            if cursor:
-                try: cursor.close()
-                except: pass
-            if conn:
-                try: conn.close()
-                except: pass
-
             if attempt == 1:
                 return [] if fetch else None
             continue
 
         except Exception as e:
             print("DB ERROR:", e)
-
-            if conn:
-                try: conn.rollback()
-                except: pass
-
             return [] if fetch else None
 
         finally:
@@ -104,6 +89,24 @@ def run_query(query, params=(), fetch=False):
                 except: pass
 
     return [] if fetch else None
+
+# =============================
+# MEMORY SERVER 🔥
+# =============================
+def get_relevant_memory(uid, message):
+    try:
+        r = requests.post(
+            f"{MEMORY_SERVER_URL}/retrieve",
+            json={"user_id": uid, "message": message},
+            timeout=3
+        )
+        return r.json()
+    except Exception as e:
+        print("Memory server failed:", e)
+        return {
+            "relevant_facts": "",
+            "recent_chat": ""
+        }
 
 # =============================
 # INIT TABLES
@@ -138,14 +141,16 @@ slightly witty, protective, and helpful.
 """
 
 # =============================
-# UTILITIES
+# AI CALL
 # =============================
-def ask(prompt, facts=""):
+def ask(message, facts="", context=""):
     try:
         r = groq.chat.completions.create(
             messages=[
-                {"role":"system","content":PERSONALITY + "\nFacts:\n" + facts},
-                {"role":"user","content":prompt}
+                {"role":"system","content":PERSONALITY},
+                {"role":"system","content":f"User Facts:\n{facts}"},
+                {"role":"system","content":f"Relevant Context:\n{context}"},
+                {"role":"user","content":message}
             ],
             model="llama-3.1-8b-instant"
         )
@@ -155,24 +160,14 @@ def ask(prompt, facts=""):
         return "⚠️ AI temporarily unavailable."
 
 # =============================
-# MEMORY
+# EXISTING MEMORY
 # =============================
-def get_memory(uid):
-    r = run_query("SELECT chat_history FROM memory WHERE user_id=%s", (uid,), True)
-    return r[0][0] if r else ""
-
-def update_memory(uid, text):
-    run_query("""
-        INSERT INTO memory(user_id, chat_history) VALUES (%s,%s)
-        ON CONFLICT(user_id) DO UPDATE SET chat_history=EXCLUDED.chat_history
-    """, (uid, text))
-
 def get_profile(uid):
     r = run_query("SELECT facts FROM profile_memory WHERE user_id=%s", (uid,), True)
     return r[0][0] if r else ""
 
 # =============================
-# INTEREST
+# INTERESTS
 # =============================
 def learn_interest(uid, msg):
     topics = ["sports","tech","finance","study","cars","entertainment"]
@@ -184,6 +179,17 @@ def learn_interest(uid, msg):
                 ON CONFLICT(user_id,interest)
                 DO UPDATE SET level = interests.level + 1
             """, (uid, t))
+
+# =============================
+# LAST SEEN
+# =============================
+def update_last_seen(uid):
+    run_query("""
+        INSERT INTO last_seen(user_id, last_time)
+        VALUES (%s,%s)
+        ON CONFLICT(user_id)
+        DO UPDATE SET last_time=EXCLUDED.last_time
+    """, (uid, datetime.now()))
 
 # =============================
 # TASKS + GOALS
@@ -203,20 +209,6 @@ def add_goal(uid, goal):
     run_query("INSERT INTO goals(user_id, goal) VALUES(%s,%s)", (uid, goal))
 
 # =============================
-# LAST SEEN
-# =============================
-def update_last_seen(uid):
-    try:
-        run_query("""
-            INSERT INTO last_seen(user_id, last_time)
-            VALUES (%s,%s)
-            ON CONFLICT(user_id)
-            DO UPDATE SET last_time=EXCLUDED.last_time
-        """, (uid, datetime.now()))
-    except Exception as e:
-        print("LAST_SEEN FAIL:", e)
-
-# =============================
 # MEDIA
 # =============================
 def transcribe_audio(url):
@@ -233,7 +225,7 @@ def transcribe_audio(url):
         return ""
 
 # =============================
-# WEBHOOK
+# WEBHOOK 🔥 UPDATED
 # =============================
 @app.route("/whatsapp", methods=["POST"])
 def whatsapp():
@@ -248,20 +240,24 @@ def whatsapp():
         update_last_seen(uid)
         learn_interest(uid, msg)
 
-        hist = get_memory(uid)
         facts = get_profile(uid)
 
-        task = detect_task(msg)
-        if task:
-            add_task(uid, task)
+        # 🔥 NEW — GET SMART MEMORY
+        memory = {}
+        try:
+            r = requests.post(
+                f"{MEMORY_SERVER_URL}/retrieve",
+                json={"user_id": uid, "message": msg},
+                timeout=3
+            )
+            memory = r.json()
+        except Exception as e:
+            print("Memory server failed:", e)
 
-        goal = detect_goal(msg)
-        if goal:
-            add_goal(uid, goal)
+        context = str(memory)
 
-        reply = ask(hist + "\nUser:" + msg + "\nJarvis:", facts)
-
-        update_memory(uid, hist + f"\nUser:{msg}\nJarvis:{reply}")
+        # 🔥 UPDATED AI CALL
+        reply = ask(msg, facts, context)
 
         r = MessagingResponse()
         r.message(reply)
