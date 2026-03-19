@@ -1,4 +1,4 @@
-print("🚀 VERSION 4 - MEMORY CONNECTED")
+print("🚀 VERSION 3 DEPLOYED")
 
 import os
 import psycopg2
@@ -40,15 +40,15 @@ def create_event(text):
 # =============================
 # CONFIG
 # =============================
-DATABASE_URL = os.environ.get("DATABASE_URL")
+# Supabase main DB
+DATABASE_URL = os.environ.get("DATABASE_URL")  # Keep pointing to Supabase
+# Memory server URL
+MEMORY_SERVER_URL = os.environ.get("MEMORY_SERVER_URL")  # Put your memory server Railway URL here
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 TWILIO_WHATSAPP_NUMBER = "whatsapp:+14155238886"
 DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY")
-
-# 🔥 MEMORY SERVER URL
-MEMORY_SERVER_URL = "https://your-memory-server.up.railway.app"
 
 pytesseract.pytesseract.tesseract_cmd = "/usr/bin/tesseract"
 
@@ -59,27 +59,33 @@ def run_query(query, params=(), fetch=False):
     for attempt in range(2):
         conn = None
         cursor = None
-
         try:
             conn = psycopg2.connect(DATABASE_URL, sslmode="require")
             cursor = conn.cursor()
-
             cursor.execute(query, params)
-
-            result = cursor.fetchall() if fetch else None
+            if fetch:
+                result = cursor.fetchall()
+            else:
+                result = None
             conn.commit()
             return result
-
         except psycopg2.InterfaceError as e:
             print("Retrying DB (cursor issue):", e)
+            if cursor:
+                try: cursor.close()
+                except: pass
+            if conn:
+                try: conn.close()
+                except: pass
             if attempt == 1:
                 return [] if fetch else None
             continue
-
         except Exception as e:
             print("DB ERROR:", e)
+            if conn:
+                try: conn.rollback()
+                except: pass
             return [] if fetch else None
-
         finally:
             if cursor:
                 try: cursor.close()
@@ -87,26 +93,7 @@ def run_query(query, params=(), fetch=False):
             if conn:
                 try: conn.close()
                 except: pass
-
     return [] if fetch else None
-
-# =============================
-# MEMORY SERVER 🔥
-# =============================
-def get_relevant_memory(uid, message):
-    try:
-        r = requests.post(
-            f"{MEMORY_SERVER_URL}/retrieve",
-            json={"user_id": uid, "message": message},
-            timeout=3
-        )
-        return r.json()
-    except Exception as e:
-        print("Memory server failed:", e)
-        return {
-            "relevant_facts": "",
-            "recent_chat": ""
-        }
 
 # =============================
 # INIT TABLES
@@ -141,16 +128,21 @@ slightly witty, protective, and helpful.
 """
 
 # =============================
-# AI CALL
+# UTILITIES
 # =============================
-def ask(message, facts="", context=""):
+def ask(prompt, facts=""):
     try:
+        # Optionally, if MEMORY_SERVER_URL is set, fetch smart memory here
+        if MEMORY_SERVER_URL:
+            try:
+                r = requests.post(f"{MEMORY_SERVER_URL}/retrieve", json={"prompt": prompt})
+                facts = r.json().get("facts", "")
+            except:
+                pass
         r = groq.chat.completions.create(
             messages=[
-                {"role":"system","content":PERSONALITY},
-                {"role":"system","content":f"User Facts:\n{facts}"},
-                {"role":"system","content":f"Relevant Context:\n{context}"},
-                {"role":"user","content":message}
+                {"role":"system","content":PERSONALITY + "\nFacts:\n" + facts},
+                {"role":"user","content":prompt}
             ],
             model="llama-3.1-8b-instant"
         )
@@ -160,14 +152,24 @@ def ask(message, facts="", context=""):
         return "⚠️ AI temporarily unavailable."
 
 # =============================
-# EXISTING MEMORY
+# MEMORY
 # =============================
+def get_memory(uid):
+    r = run_query("SELECT chat_history FROM memory WHERE user_id=%s", (uid,), True)
+    return r[0][0] if r else ""
+
+def update_memory(uid, text):
+    run_query("""
+        INSERT INTO memory(user_id, chat_history) VALUES (%s,%s)
+        ON CONFLICT(user_id) DO UPDATE SET chat_history=EXCLUDED.chat_history
+    """, (uid, text))
+
 def get_profile(uid):
     r = run_query("SELECT facts FROM profile_memory WHERE user_id=%s", (uid,), True)
     return r[0][0] if r else ""
 
 # =============================
-# INTERESTS
+# INTEREST
 # =============================
 def learn_interest(uid, msg):
     topics = ["sports","tech","finance","study","cars","entertainment"]
@@ -179,17 +181,6 @@ def learn_interest(uid, msg):
                 ON CONFLICT(user_id,interest)
                 DO UPDATE SET level = interests.level + 1
             """, (uid, t))
-
-# =============================
-# LAST SEEN
-# =============================
-def update_last_seen(uid):
-    run_query("""
-        INSERT INTO last_seen(user_id, last_time)
-        VALUES (%s,%s)
-        ON CONFLICT(user_id)
-        DO UPDATE SET last_time=EXCLUDED.last_time
-    """, (uid, datetime.now()))
 
 # =============================
 # TASKS + GOALS
@@ -209,6 +200,20 @@ def add_goal(uid, goal):
     run_query("INSERT INTO goals(user_id, goal) VALUES(%s,%s)", (uid, goal))
 
 # =============================
+# LAST SEEN
+# =============================
+def update_last_seen(uid):
+    try:
+        run_query("""
+            INSERT INTO last_seen(user_id, last_time)
+            VALUES (%s,%s)
+            ON CONFLICT(user_id)
+            DO UPDATE SET last_time=EXCLUDED.last_time
+        """, (uid, datetime.now()))
+    except Exception as e:
+        print("LAST_SEEN FAIL:", e)
+
+# =============================
 # MEDIA
 # =============================
 def transcribe_audio(url):
@@ -225,7 +230,7 @@ def transcribe_audio(url):
         return ""
 
 # =============================
-# WEBHOOK 🔥 UPDATED
+# WEBHOOK
 # =============================
 @app.route("/whatsapp", methods=["POST"])
 def whatsapp():
@@ -240,24 +245,20 @@ def whatsapp():
         update_last_seen(uid)
         learn_interest(uid, msg)
 
+        hist = get_memory(uid)
         facts = get_profile(uid)
 
-        # 🔥 NEW — GET SMART MEMORY
-        memory = {}
-        try:
-            r = requests.post(
-                f"{MEMORY_SERVER_URL}/retrieve",
-                json={"user_id": uid, "message": msg},
-                timeout=3
-            )
-            memory = r.json()
-        except Exception as e:
-            print("Memory server failed:", e)
+        task = detect_task(msg)
+        if task:
+            add_task(uid, task)
 
-        context = str(memory)
+        goal = detect_goal(msg)
+        if goal:
+            add_goal(uid, goal)
 
-        # 🔥 UPDATED AI CALL
-        reply = ask(msg, facts, context)
+        reply = ask(hist + "\nUser:" + msg + "\nJarvis:", facts)
+
+        update_memory(uid, hist + f"\nUser:{msg}\nJarvis:{reply}")
 
         r = MessagingResponse()
         r.message(reply)
