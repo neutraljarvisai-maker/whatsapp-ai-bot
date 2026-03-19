@@ -1,4 +1,4 @@
-print("🚀 VERSION 3 DEPLOYED")
+print("🚀 VERSION 4 (QUERY AI + LOW TOKENS)")
 
 import os
 import psycopg2
@@ -40,80 +40,35 @@ def create_event(text):
 # =============================
 # CONFIG
 # =============================
-# Supabase main DB
-DATABASE_URL = os.environ.get("DATABASE_URL")  # Keep pointing to Supabase
-# Memory server URL
-MEMORY_SERVER_URL = os.environ.get("MEMORY_SERVER_URL")  # Put your memory server Railway URL here
+DATABASE_URL = os.environ.get("DATABASE_URL")
+MEMORY_SERVER_URL = os.environ.get("MEMORY_SERVER_URL")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+
+SUPABASE_FUNCTION_URL = "https://creaavsrhfxwshknjghh.supabase.co/functions/v1/query_ai"
+SUPABASE_ANON_KEY = "YOUR_SUPABASE_ANON_KEY"
+
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
-TWILIO_WHATSAPP_NUMBER = "whatsapp:+14155238886"
 DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY")
 
 pytesseract.pytesseract.tesseract_cmd = "/usr/bin/tesseract"
 
 # =============================
-# 🔐 BULLETPROOF DB LAYER
+# DB
 # =============================
 def run_query(query, params=(), fetch=False):
-    for attempt in range(2):
-        conn = None
-        cursor = None
-        try:
-            conn = psycopg2.connect(DATABASE_URL, sslmode="require")
-            cursor = conn.cursor()
-            cursor.execute(query, params)
-            if fetch:
-                result = cursor.fetchall()
-            else:
-                result = None
-            conn.commit()
-            return result
-        except psycopg2.InterfaceError as e:
-            print("Retrying DB (cursor issue):", e)
-            if cursor:
-                try: cursor.close()
-                except: pass
-            if conn:
-                try: conn.close()
-                except: pass
-            if attempt == 1:
-                return [] if fetch else None
-            continue
-        except Exception as e:
-            print("DB ERROR:", e)
-            if conn:
-                try: conn.rollback()
-                except: pass
-            return [] if fetch else None
-        finally:
-            if cursor:
-                try: cursor.close()
-                except: pass
-            if conn:
-                try: conn.close()
-                except: pass
-    return [] if fetch else None
-
-# =============================
-# INIT TABLES
-# =============================
-tables = [
-    """CREATE TABLE IF NOT EXISTS memory(user_id TEXT PRIMARY KEY, chat_history TEXT)""",
-    """CREATE TABLE IF NOT EXISTS profile_memory(user_id TEXT PRIMARY KEY, facts TEXT)""",
-    """CREATE TABLE IF NOT EXISTS interests(user_id TEXT, interest TEXT, level INTEGER DEFAULT 1,
-       PRIMARY KEY(user_id,interest))""",
-    """CREATE TABLE IF NOT EXISTS tasks(id SERIAL PRIMARY KEY, user_id TEXT, description TEXT,
-       status TEXT DEFAULT 'pending', attempts INTEGER DEFAULT 0,
-       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
-    """CREATE TABLE IF NOT EXISTS goals(id SERIAL PRIMARY KEY, user_id TEXT, goal TEXT,
-       progress INTEGER DEFAULT 0,
-       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
-    """CREATE TABLE IF NOT EXISTS last_seen(user_id TEXT PRIMARY KEY, last_time TIMESTAMP)"""
-]
-
-for t in tables:
-    run_query(t)
+    try:
+        conn = psycopg2.connect(DATABASE_URL, sslmode="require")
+        cursor = conn.cursor()
+        cursor.execute(query, params)
+        result = cursor.fetchall() if fetch else None
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return result
+    except Exception as e:
+        print("DB ERROR:", e)
+        return [] if fetch else None
 
 # =============================
 # CLIENTS
@@ -128,106 +83,90 @@ slightly witty, protective, and helpful.
 """
 
 # =============================
-# UTILITIES
+# 🔥 QUERY AI FUNCTION
 # =============================
-def ask(prompt, facts=""):
+def get_query_hints(user_message):
     try:
-        # Optionally, if MEMORY_SERVER_URL is set, fetch smart memory here
-        if MEMORY_SERVER_URL:
-            try:
-                r = requests.post(f"{MEMORY_SERVER_URL}/retrieve", json={"prompt": prompt})
-                facts = r.json().get("facts", "")
-            except:
-                pass
+        r = requests.post(
+            SUPABASE_FUNCTION_URL,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {SUPABASE_ANON_KEY}"
+            },
+            json={"question": user_message}
+        )
+        data = r.json()
+        return data.get("hints", [])
+    except Exception as e:
+        print("Query AI Error:", e)
+        return []
+
+# =============================
+# 🧠 SMART ASK (LOW TOKEN)
+# =============================
+def ask(user_message, recent_context, hints, facts=""):
+    try:
+        context_text = "\n".join(hints)
+
+        prompt = f"""
+User message:
+{user_message}
+
+Recent conversation:
+{recent_context}
+
+Relevant context:
+{context_text}
+
+User profile:
+{facts}
+
+Respond naturally and intelligently.
+"""
+
         r = groq.chat.completions.create(
             messages=[
-                {"role":"system","content":PERSONALITY + "\nFacts:\n" + facts},
-                {"role":"user","content":prompt}
+                {"role": "system", "content": PERSONALITY},
+                {"role": "user", "content": prompt}
             ],
             model="llama-3.1-8b-instant"
         )
+
         return r.choices[0].message.content.strip()
+
     except Exception as e:
         print("Groq error:", e)
-        return "⚠️ AI temporarily unavailable."
+        return "⚠️ AI error."
 
 # =============================
-# MEMORY
+# MEMORY (SHORT CONTEXT ONLY)
 # =============================
-def get_memory(uid):
-    r = run_query("SELECT chat_history FROM memory WHERE user_id=%s", (uid,), True)
-    return r[0][0] if r else ""
+def get_recent_memory(uid):
+    r = run_query(
+        "SELECT chat_history FROM memory WHERE user_id=%s",
+        (uid,),
+        True
+    )
+    if not r:
+        return ""
+
+    full = r[0][0]
+
+    # ONLY LAST 5 LINES (VERY IMPORTANT)
+    lines = full.split("\n")
+    return "\n".join(lines[-5:])
 
 def update_memory(uid, text):
     run_query("""
-        INSERT INTO memory(user_id, chat_history) VALUES (%s,%s)
-        ON CONFLICT(user_id) DO UPDATE SET chat_history=EXCLUDED.chat_history
-    """, (uid, text))
+        INSERT INTO memory(user_id, chat_history)
+        VALUES (%s,%s)
+        ON CONFLICT(user_id)
+        DO UPDATE SET chat_history = memory.chat_history || %s
+    """, (uid, text, text))
 
 def get_profile(uid):
     r = run_query("SELECT facts FROM profile_memory WHERE user_id=%s", (uid,), True)
     return r[0][0] if r else ""
-
-# =============================
-# INTEREST
-# =============================
-def learn_interest(uid, msg):
-    topics = ["sports","tech","finance","study","cars","entertainment"]
-    for t in topics:
-        if t in msg.lower():
-            run_query("""
-                INSERT INTO interests(user_id, interest, level)
-                VALUES(%s,%s,1)
-                ON CONFLICT(user_id,interest)
-                DO UPDATE SET level = interests.level + 1
-            """, (uid, t))
-
-# =============================
-# TASKS + GOALS
-# =============================
-def detect_task(msg):
-    t = ask(f"Task to do later? Return task or NONE.\n{msg}")
-    return t if t.upper() != "NONE" else None
-
-def add_task(uid, desc):
-    run_query("INSERT INTO tasks(user_id, description) VALUES(%s,%s)", (uid, desc))
-
-def detect_goal(msg):
-    g = ask(f"Long-term goal? Return goal or NONE.\n{msg}")
-    return g if g.upper() != "NONE" else None
-
-def add_goal(uid, goal):
-    run_query("INSERT INTO goals(user_id, goal) VALUES(%s,%s)", (uid, goal))
-
-# =============================
-# LAST SEEN
-# =============================
-def update_last_seen(uid):
-    try:
-        run_query("""
-            INSERT INTO last_seen(user_id, last_time)
-            VALUES (%s,%s)
-            ON CONFLICT(user_id)
-            DO UPDATE SET last_time=EXCLUDED.last_time
-        """, (uid, datetime.now()))
-    except Exception as e:
-        print("LAST_SEEN FAIL:", e)
-
-# =============================
-# MEDIA
-# =============================
-def transcribe_audio(url):
-    try:
-        audio = requests.get(url).content
-        headers = {
-            "Authorization": f"Token {DEEPGRAM_API_KEY}",
-            "Content-Type": "audio/ogg"
-        }
-        r = requests.post("https://api.deepgram.com/v1/listen",
-                          headers=headers, data=audio)
-        return r.json()["results"]["channels"][0]["alternatives"][0]["transcript"]
-    except:
-        return ""
 
 # =============================
 # WEBHOOK
@@ -237,37 +176,34 @@ def whatsapp():
     try:
         f = request.form
         uid = f.get("From")
-        msg = f.get("Body","")
+        msg = f.get("Body", "")
 
         if not uid:
             return "OK"
 
-        update_last_seen(uid)
-        learn_interest(uid, msg)
+        # 🔥 STEP 1: Get smart hints
+        hints = get_query_hints(msg)
 
-        hist = get_memory(uid)
+        # 🔥 STEP 2: Get SHORT memory
+        recent = get_recent_memory(uid)
+
+        # 🔥 STEP 3: Get profile
         facts = get_profile(uid)
 
-        task = detect_task(msg)
-        if task:
-            add_task(uid, task)
+        # 🔥 STEP 4: Ask AI
+        reply = ask(msg, recent, hints, facts)
 
-        goal = detect_goal(msg)
-        if goal:
-            add_goal(uid, goal)
-
-        reply = ask(hist + "\nUser:" + msg + "\nJarvis:", facts)
-
-        update_memory(uid, hist + f"\nUser:{msg}\nJarvis:{reply}")
+        # 🔥 STEP 5: Save memory
+        update_memory(uid, f"\nUser:{msg}\nJarvis:{reply}")
 
         r = MessagingResponse()
         r.message(reply)
         return str(r)
 
     except Exception as e:
-        print("CRASH PREVENTED:", e)
+        print("CRASH:", e)
         r = MessagingResponse()
-        r.message("⚠️ Temporary issue. Try again.")
+        r.message("⚠️ Temporary issue.")
         return str(r)
 
 # =============================
