@@ -1,4 +1,4 @@
-print("🚀 VERSION 4 (QUERY AI + LOW TOKENS)")
+print("🚀 VERSION 6 (ADAPTIVE MEMORY + QUERY AI FUSION)")
 
 import os
 import psycopg2
@@ -41,7 +41,6 @@ def create_event(text):
 # CONFIG
 # =============================
 DATABASE_URL = os.environ.get("DATABASE_URL")
-MEMORY_SERVER_URL = os.environ.get("MEMORY_SERVER_URL")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
 SUPABASE_FUNCTION_URL = "https://creaavsrhfxwshknjghh.supabase.co/functions/v1/query_ai"
@@ -49,7 +48,6 @@ SUPABASE_ANON_KEY = "YOUR_SUPABASE_ANON_KEY"
 
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
-DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY")
 
 pytesseract.pytesseract.tesseract_cmd = "/usr/bin/tesseract"
 
@@ -77,13 +75,28 @@ groq = Groq(api_key=GROQ_API_KEY)
 twilio = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 app = Flask(__name__)
 
+# =============================
+# 🧠 PERSONALITY (CONTROLLED)
+# =============================
 PERSONALITY = """
-You are Jarvis — calm, intelligent, loyal, proactive,
-slightly witty, protective, and helpful.
+You are Jarvis — calm, intelligent, efficient, and helpful.
+
+CRITICAL RULES:
+- NEVER make up facts or events.
+- ONLY use provided information.
+- If unsure, say: "I don't have that information yet."
+
+BEHAVIOR:
+- Keep responses short and clear.
+- Do NOT ask unnecessary questions.
+- If user is unsure, suggest next step instead of repeating.
+
+STYLE:
+- Smart, minimal, slightly witty.
 """
 
 # =============================
-# 🔥 QUERY AI FUNCTION
+# 🔥 QUERY AI
 # =============================
 def get_query_hints(user_message):
     try:
@@ -102,26 +115,56 @@ def get_query_hints(user_message):
         return []
 
 # =============================
-# 🧠 SMART ASK (LOW TOKEN)
+# 🧠 ADAPTIVE MEMORY
 # =============================
-def ask(user_message, recent_context, hints, facts=""):
+def get_recent_memory(uid, user_message):
+    r = run_query(
+        "SELECT chat_history FROM memory WHERE user_id=%s",
+        (uid,),
+        True
+    )
+    if not r:
+        return ""
+
+    lines = r[0][0].split("\n")
+    msg = user_message.lower()
+
+    # 🔥 detect reference
+    reference_words = ["that", "it", "this", "before", "earlier", "what about", "you said"]
+    needs_more = any(w in msg for w in reference_words)
+
+    if needs_more:
+        return "\n".join(lines[-12:])
+    else:
+        return "\n".join(lines[-4:])
+
+# =============================
+# 🧠 SMART ASK (FUSED CONTEXT)
+# =============================
+def ask(user_message, memory_context, hints, facts=""):
     try:
-        context_text = "\n".join(hints)
+        hint_text = "\n".join(hints)
 
         prompt = f"""
 User message:
 {user_message}
 
-Recent conversation:
-{recent_context}
+Conversation context:
+{memory_context}
 
-Relevant context:
-{context_text}
+Relevant memory hints:
+{hint_text}
 
 User profile:
 {facts}
 
-Respond naturally and intelligently.
+Respond naturally and concisely.
+
+Rules:
+- Do NOT hallucinate
+- Keep it short
+- Do NOT ask unnecessary questions
+- If unsure, say you don't know
 """
 
         r = groq.chat.completions.create(
@@ -139,23 +182,8 @@ Respond naturally and intelligently.
         return "⚠️ AI error."
 
 # =============================
-# MEMORY (SHORT CONTEXT ONLY)
+# MEMORY SAVE
 # =============================
-def get_recent_memory(uid):
-    r = run_query(
-        "SELECT chat_history FROM memory WHERE user_id=%s",
-        (uid,),
-        True
-    )
-    if not r:
-        return ""
-
-    full = r[0][0]
-
-    # ONLY LAST 5 LINES (VERY IMPORTANT)
-    lines = full.split("\n")
-    return "\n".join(lines[-5:])
-
 def update_memory(uid, text):
     run_query("""
         INSERT INTO memory(user_id, chat_history)
@@ -181,19 +209,13 @@ def whatsapp():
         if not uid:
             return "OK"
 
-        # 🔥 STEP 1: Get smart hints
+        # 🔥 Smart system
         hints = get_query_hints(msg)
-
-        # 🔥 STEP 2: Get SHORT memory
-        recent = get_recent_memory(uid)
-
-        # 🔥 STEP 3: Get profile
+        memory_context = get_recent_memory(uid, msg)
         facts = get_profile(uid)
 
-        # 🔥 STEP 4: Ask AI
-        reply = ask(msg, recent, hints, facts)
+        reply = ask(msg, memory_context, hints, facts)
 
-        # 🔥 STEP 5: Save memory
         update_memory(uid, f"\nUser:{msg}\nJarvis:{reply}")
 
         r = MessagingResponse()
