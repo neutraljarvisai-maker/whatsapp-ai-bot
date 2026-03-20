@@ -1,27 +1,44 @@
-print("🚀 VERSION 6.1 (RAILWAY SAFE + ADAPTIVE AI)")
+print("🚀 VERSION 6.2 (CRASH-PROOF BUILD)")
 
 import os
 import psycopg2
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
 from twilio.rest import Client
-from groq import Groq
 import requests
 
 # =============================
-# CONFIG
+# SAFE INIT
 # =============================
 DATABASE_URL = os.environ.get("DATABASE_URL")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
 SUPABASE_FUNCTION_URL = "https://creaavsrhfxwshknjghh.supabase.co/functions/v1/query_ai"
-SUPABASE_ANON_KEY = "YOUR_SUPABASE_ANON_KEY"
+SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY")  # 🔥 FIXED
 
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 
 # =============================
-# DB
+# SAFE CLIENTS
+# =============================
+try:
+    from groq import Groq
+    groq = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
+except Exception as e:
+    print("Groq init failed:", e)
+    groq = None
+
+try:
+    twilio = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+except Exception as e:
+    print("Twilio init failed:", e)
+    twilio = None
+
+app = Flask(__name__)
+
+# =============================
+# DB SAFE
 # =============================
 def run_query(query, params=(), fetch=False):
     try:
@@ -38,30 +55,12 @@ def run_query(query, params=(), fetch=False):
         return [] if fetch else None
 
 # =============================
-# CLIENTS
-# =============================
-groq = Groq(api_key=GROQ_API_KEY)
-twilio = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-app = Flask(__name__)
-
-# =============================
-# PERSONALITY
-# =============================
-PERSONALITY = """
-You are Jarvis — calm, intelligent, efficient, and helpful.
-
-RULES:
-- NEVER make up facts
-- ONLY use given info
-- If unsure, say you don’t know
-- Keep responses short
-- Do not ask unnecessary questions
-"""
-
-# =============================
-# QUERY AI
+# QUERY AI SAFE
 # =============================
 def get_query_hints(user_message):
+    if not SUPABASE_ANON_KEY:
+        return []
+
     try:
         r = requests.post(
             SUPABASE_FUNCTION_URL,
@@ -69,7 +68,8 @@ def get_query_hints(user_message):
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {SUPABASE_ANON_KEY}"
             },
-            json={"question": user_message}
+            json={"question": user_message},
+            timeout=5
         )
         return r.json().get("hints", [])
     except Exception as e:
@@ -77,56 +77,58 @@ def get_query_hints(user_message):
         return []
 
 # =============================
-# ADAPTIVE MEMORY
+# MEMORY
 # =============================
 def get_recent_memory(uid, user_message):
-    r = run_query(
-        "SELECT chat_history FROM memory WHERE user_id=%s",
-        (uid,),
-        True
-    )
+    try:
+        r = run_query(
+            "SELECT chat_history FROM memory WHERE user_id=%s",
+            (uid,),
+            True
+        )
 
-    if not r:
+        if not r:
+            return ""
+
+        lines = r[0][0].split("\n")
+        msg = user_message.lower()
+
+        ref_words = ["that", "it", "this", "before", "earlier", "you said"]
+
+        if any(w in msg for w in ref_words):
+            return "\n".join(lines[-10:])
+        else:
+            return "\n".join(lines[-4:])
+
+    except:
         return ""
 
-    lines = r[0][0].split("\n")
-    msg = user_message.lower()
-
-    reference_words = ["that", "it", "this", "before", "earlier", "what about", "you said"]
-
-    if any(w in msg for w in reference_words):
-        return "\n".join(lines[-12:])
-    else:
-        return "\n".join(lines[-4:])
-
 # =============================
-# ASK AI
+# AI RESPONSE
 # =============================
 def ask(user_message, memory_context, hints):
+    if not groq:
+        return "⚠️ AI not configured."
+
     try:
-        hint_text = "\n".join(hints)
-
         prompt = f"""
-User message:
-{user_message}
+User: {user_message}
 
-Conversation:
+Context:
 {memory_context}
 
-Relevant context:
-{hint_text}
-
-Respond naturally and concisely.
+Hints:
+{" ".join(hints)}
 
 Rules:
-- No hallucination
-- Keep it short
-- No unnecessary questions
+- Be accurate
+- Be short
+- No guessing
 """
 
         r = groq.chat.completions.create(
             messages=[
-                {"role": "system", "content": PERSONALITY},
+                {"role": "system", "content": "You are a smart assistant."},
                 {"role": "user", "content": prompt}
             ],
             model="llama-3.1-8b-instant"
@@ -139,15 +141,18 @@ Rules:
         return "⚠️ AI error."
 
 # =============================
-# MEMORY SAVE
+# SAVE MEMORY
 # =============================
 def update_memory(uid, text):
-    run_query("""
-        INSERT INTO memory(user_id, chat_history)
-        VALUES (%s,%s)
-        ON CONFLICT(user_id)
-        DO UPDATE SET chat_history = memory.chat_history || %s
-    """, (uid, text, text))
+    try:
+        run_query("""
+            INSERT INTO memory(user_id, chat_history)
+            VALUES (%s,%s)
+            ON CONFLICT(user_id)
+            DO UPDATE SET chat_history = memory.chat_history || %s
+        """, (uid, text, text))
+    except:
+        pass
 
 # =============================
 # WEBHOOK
@@ -163,9 +168,9 @@ def whatsapp():
             return "OK"
 
         hints = get_query_hints(msg)
-        memory_context = get_recent_memory(uid, msg)
+        memory = get_recent_memory(uid, msg)
 
-        reply = ask(msg, memory_context, hints)
+        reply = ask(msg, memory, hints)
 
         update_memory(uid, f"\nUser:{msg}\nJarvis:{reply}")
 
