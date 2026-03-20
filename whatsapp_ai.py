@@ -1,6 +1,7 @@
-print("🚀 VERSION 7 (FULL JARVIS SAFE BUILD)")
+print("🚀 VERSION 8 (JARVIS + SERVICE ACCOUNT CALENDAR)")
 
 import os
+import json
 import psycopg2
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
@@ -14,10 +15,12 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
 SUPABASE_FUNCTION_URL = "https://creaavsrhfxwshknjghh.supabase.co/functions/v1/query_ai"
-SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY")
+SUPABASE_ANON_KEY = os.environ.get("YOUR_SUPABASE_ANON_KEY")
 
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
+
+GOOGLE_SERVICE_JSON = os.environ.get("GOOGLE_SERVICE_JSON")
 
 # =============================
 # SAFE CLIENTS
@@ -38,22 +41,29 @@ except Exception as e:
 app = Flask(__name__)
 
 # =============================
-# OPTIONAL: GOOGLE CALENDAR
+# GOOGLE CALENDAR (SERVICE ACCOUNT)
 # =============================
 try:
-    from google.oauth2.credentials import Credentials
+    from google.oauth2 import service_account
     from googleapiclient.discovery import build
     from datetime import datetime, timedelta
-    from dateutil import parser
+    from dateutil import parser as dateparser
 
-    TOKEN_FILE = "token.json"
+    SCOPES = ["https://www.googleapis.com/auth/calendar"]
 
     def get_calendar_service():
         try:
-            creds = Credentials.from_authorized_user_file(TOKEN_FILE)
+            if not GOOGLE_SERVICE_JSON:
+                print("No GOOGLE_SERVICE_JSON found.")
+                return None
+
+            service_info = json.loads(GOOGLE_SERVICE_JSON)
+            creds = service_account.Credentials.from_service_account_info(
+                service_info, scopes=SCOPES
+            )
             return build("calendar", "v3", credentials=creds)
         except Exception as e:
-            print("Calendar init error:", e)
+            print("Calendar service error:", e)
             return None
 
     def create_event(text):
@@ -62,24 +72,33 @@ try:
             if not service:
                 return None
 
-            dt = parser.parse(text, fuzzy=True)
+            dt = dateparser.parse(text, fuzzy=True)
+            if not dt:
+                return None
 
             event = {
                 "summary": text,
-                "start": {"dateTime": dt.isoformat(), "timeZone": "Asia/Kolkata"},
+                "start": {
+                    "dateTime": dt.isoformat(),
+                    "timeZone": "Asia/Kolkata"
+                },
                 "end": {
                     "dateTime": (dt + timedelta(hours=1)).isoformat(),
-                    "timeZone": "Asia/Kolkata",
+                    "timeZone": "Asia/Kolkata"
                 },
             }
 
-            service.events().insert(calendarId="primary", body=event).execute()
-            return "📅 Event added to calendar."
+            # Use the email of your MAIN Google account's calendar here
+            CALENDAR_ID = os.environ.get("MAIN_CALENDAR_ID", "primary")
+
+            service.events().insert(calendarId=CALENDAR_ID, body=event).execute()
+            return "📅 Event added to your calendar!"
         except Exception as e:
-            print("Calendar error:", e)
+            print("Calendar create_event error:", e)
             return None
 
-except:
+except Exception as e:
+    print("Google Calendar import failed:", e)
     def create_event(text):
         return None
 
@@ -150,7 +169,7 @@ def get_recent_memory(uid, user_message):
         return ""
 
 # =============================
-# SMART DETECTION (TASK / EVENT)
+# SMART EVENT DETECTION
 # =============================
 def detect_event(text):
     if not groq:
@@ -159,7 +178,10 @@ def detect_event(text):
     try:
         r = groq.chat.completions.create(
             messages=[
-                {"role": "system", "content": "Extract event if user mentions scheduling. Else return NONE."},
+                {
+                    "role": "system",
+                    "content": "If the user wants to schedule or add an event/meeting/reminder, extract it as plain text. Otherwise return NONE."
+                },
                 {"role": "user", "content": text}
             ],
             model="llama-3.1-8b-instant"
@@ -197,7 +219,7 @@ Rules:
 
         r = groq.chat.completions.create(
             messages=[
-                {"role": "system", "content": "You are Jarvis, a smart assistant."},
+                {"role": "system", "content": "You are Jarvis, a smart personal assistant."},
                 {"role": "user", "content": prompt}
             ],
             model="llama-3.1-8b-instant"
@@ -239,7 +261,7 @@ def whatsapp():
         hints = get_query_hints(msg)
         memory = get_recent_memory(uid, msg)
 
-        # 🔥 Detect event
+        # Detect and create calendar event if needed
         event = detect_event(msg)
         calendar_msg = None
 
