@@ -1,4 +1,4 @@
-print("🚀 VERSION 6.2 (CRASH-PROOF BUILD)")
+print("🚀 VERSION 7 (FULL JARVIS SAFE BUILD)")
 
 import os
 import psycopg2
@@ -14,7 +14,7 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
 SUPABASE_FUNCTION_URL = "https://creaavsrhfxwshknjghh.supabase.co/functions/v1/query_ai"
-SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY")  # 🔥 FIXED
+SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY")
 
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
@@ -38,6 +38,52 @@ except Exception as e:
 app = Flask(__name__)
 
 # =============================
+# OPTIONAL: GOOGLE CALENDAR
+# =============================
+try:
+    from google.oauth2.credentials import Credentials
+    from googleapiclient.discovery import build
+    from datetime import datetime, timedelta
+    from dateutil import parser
+
+    TOKEN_FILE = "token.json"
+
+    def get_calendar_service():
+        try:
+            creds = Credentials.from_authorized_user_file(TOKEN_FILE)
+            return build("calendar", "v3", credentials=creds)
+        except Exception as e:
+            print("Calendar init error:", e)
+            return None
+
+    def create_event(text):
+        try:
+            service = get_calendar_service()
+            if not service:
+                return None
+
+            dt = parser.parse(text, fuzzy=True)
+
+            event = {
+                "summary": text,
+                "start": {"dateTime": dt.isoformat(), "timeZone": "Asia/Kolkata"},
+                "end": {
+                    "dateTime": (dt + timedelta(hours=1)).isoformat(),
+                    "timeZone": "Asia/Kolkata",
+                },
+            }
+
+            service.events().insert(calendarId="primary", body=event).execute()
+            return "📅 Event added to calendar."
+        except Exception as e:
+            print("Calendar error:", e)
+            return None
+
+except:
+    def create_event(text):
+        return None
+
+# =============================
 # DB SAFE
 # =============================
 def run_query(query, params=(), fetch=False):
@@ -55,7 +101,7 @@ def run_query(query, params=(), fetch=False):
         return [] if fetch else None
 
 # =============================
-# QUERY AI SAFE
+# QUERY AI
 # =============================
 def get_query_hints(user_message):
     if not SUPABASE_ANON_KEY:
@@ -104,6 +150,28 @@ def get_recent_memory(uid, user_message):
         return ""
 
 # =============================
+# SMART DETECTION (TASK / EVENT)
+# =============================
+def detect_event(text):
+    if not groq:
+        return None
+
+    try:
+        r = groq.chat.completions.create(
+            messages=[
+                {"role": "system", "content": "Extract event if user mentions scheduling. Else return NONE."},
+                {"role": "user", "content": text}
+            ],
+            model="llama-3.1-8b-instant"
+        )
+
+        out = r.choices[0].message.content.strip()
+        return None if "NONE" in out.upper() else out
+
+    except:
+        return None
+
+# =============================
 # AI RESPONSE
 # =============================
 def ask(user_message, memory_context, hints):
@@ -124,11 +192,12 @@ Rules:
 - Be accurate
 - Be short
 - No guessing
+- Don't ask unnecessary questions
 """
 
         r = groq.chat.completions.create(
             messages=[
-                {"role": "system", "content": "You are a smart assistant."},
+                {"role": "system", "content": "You are Jarvis, a smart assistant."},
                 {"role": "user", "content": prompt}
             ],
             model="llama-3.1-8b-instant"
@@ -170,7 +239,17 @@ def whatsapp():
         hints = get_query_hints(msg)
         memory = get_recent_memory(uid, msg)
 
+        # 🔥 Detect event
+        event = detect_event(msg)
+        calendar_msg = None
+
+        if event:
+            calendar_msg = create_event(event)
+
         reply = ask(msg, memory, hints)
+
+        if calendar_msg:
+            reply += f"\n\n{calendar_msg}"
 
         update_memory(uid, f"\nUser:{msg}\nJarvis:{reply}")
 
