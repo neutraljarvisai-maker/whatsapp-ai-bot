@@ -259,7 +259,7 @@ def update_memory(uid, text):
             INSERT INTO memory(user_id, chat_history)
             VALUES (%s,%s)
             ON CONFLICT(user_id)
-            DO UPDATE SET chat_history = memory.chat_history || %s
+            DO UPDATE SET chat_history = COALESCE(memory.chat_history, '') || %s
         """, (uid, text, text))
     except:
         pass
