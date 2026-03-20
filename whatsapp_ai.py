@@ -1,4 +1,4 @@
-print("🚀 VERSION 6 (ADAPTIVE MEMORY + QUERY AI FUSION)")
+print("🚀 VERSION 6.1 (RAILWAY SAFE + ADAPTIVE AI)")
 
 import os
 import psycopg2
@@ -6,36 +6,7 @@ from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
 from twilio.rest import Client
 from groq import Groq
-from datetime import datetime, timedelta
 import requests
-from PIL import Image
-import pytesseract
-from dateutil import parser
-
-# =============================
-# 📅 GOOGLE CALENDAR SETUP
-# =============================
-from google.oauth2.credentials import Credentials
-from googleapiclient.discovery import build
-
-TOKEN_FILE = "token.json"
-
-def get_calendar_service():
-    creds = Credentials.from_authorized_user_file(TOKEN_FILE)
-    return build("calendar", "v3", credentials=creds)
-
-def create_event(text):
-    service = get_calendar_service()
-    dt = parser.parse(text, fuzzy=True)
-    event = {
-        "summary": text,
-        "start": {"dateTime": dt.isoformat(), "timeZone": "Asia/Kolkata"},
-        "end": {
-            "dateTime": (dt + timedelta(hours=1)).isoformat(),
-            "timeZone": "Asia/Kolkata",
-        },
-    }
-    service.events().insert(calendarId="primary", body=event).execute()
 
 # =============================
 # CONFIG
@@ -48,8 +19,6 @@ SUPABASE_ANON_KEY = "YOUR_SUPABASE_ANON_KEY"
 
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
-
-pytesseract.pytesseract.tesseract_cmd = "/usr/bin/tesseract"
 
 # =============================
 # DB
@@ -76,27 +45,21 @@ twilio = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 app = Flask(__name__)
 
 # =============================
-# 🧠 PERSONALITY (CONTROLLED)
+# PERSONALITY
 # =============================
 PERSONALITY = """
 You are Jarvis — calm, intelligent, efficient, and helpful.
 
-CRITICAL RULES:
-- NEVER make up facts or events.
-- ONLY use provided information.
-- If unsure, say: "I don't have that information yet."
-
-BEHAVIOR:
-- Keep responses short and clear.
-- Do NOT ask unnecessary questions.
-- If user is unsure, suggest next step instead of repeating.
-
-STYLE:
-- Smart, minimal, slightly witty.
+RULES:
+- NEVER make up facts
+- ONLY use given info
+- If unsure, say you don’t know
+- Keep responses short
+- Do not ask unnecessary questions
 """
 
 # =============================
-# 🔥 QUERY AI
+# QUERY AI
 # =============================
 def get_query_hints(user_message):
     try:
@@ -108,14 +71,13 @@ def get_query_hints(user_message):
             },
             json={"question": user_message}
         )
-        data = r.json()
-        return data.get("hints", [])
+        return r.json().get("hints", [])
     except Exception as e:
         print("Query AI Error:", e)
         return []
 
 # =============================
-# 🧠 ADAPTIVE MEMORY
+# ADAPTIVE MEMORY
 # =============================
 def get_recent_memory(uid, user_message):
     r = run_query(
@@ -123,25 +85,24 @@ def get_recent_memory(uid, user_message):
         (uid,),
         True
     )
+
     if not r:
         return ""
 
     lines = r[0][0].split("\n")
     msg = user_message.lower()
 
-    # 🔥 detect reference
     reference_words = ["that", "it", "this", "before", "earlier", "what about", "you said"]
-    needs_more = any(w in msg for w in reference_words)
 
-    if needs_more:
+    if any(w in msg for w in reference_words):
         return "\n".join(lines[-12:])
     else:
         return "\n".join(lines[-4:])
 
 # =============================
-# 🧠 SMART ASK (FUSED CONTEXT)
+# ASK AI
 # =============================
-def ask(user_message, memory_context, hints, facts=""):
+def ask(user_message, memory_context, hints):
     try:
         hint_text = "\n".join(hints)
 
@@ -149,22 +110,18 @@ def ask(user_message, memory_context, hints, facts=""):
 User message:
 {user_message}
 
-Conversation context:
+Conversation:
 {memory_context}
 
-Relevant memory hints:
+Relevant context:
 {hint_text}
-
-User profile:
-{facts}
 
 Respond naturally and concisely.
 
 Rules:
-- Do NOT hallucinate
+- No hallucination
 - Keep it short
-- Do NOT ask unnecessary questions
-- If unsure, say you don't know
+- No unnecessary questions
 """
 
         r = groq.chat.completions.create(
@@ -192,10 +149,6 @@ def update_memory(uid, text):
         DO UPDATE SET chat_history = memory.chat_history || %s
     """, (uid, text, text))
 
-def get_profile(uid):
-    r = run_query("SELECT facts FROM profile_memory WHERE user_id=%s", (uid,), True)
-    return r[0][0] if r else ""
-
 # =============================
 # WEBHOOK
 # =============================
@@ -209,12 +162,10 @@ def whatsapp():
         if not uid:
             return "OK"
 
-        # 🔥 Smart system
         hints = get_query_hints(msg)
         memory_context = get_recent_memory(uid, msg)
-        facts = get_profile(uid)
 
-        reply = ask(msg, memory_context, hints, facts)
+        reply = ask(msg, memory_context, hints)
 
         update_memory(uid, f"\nUser:{msg}\nJarvis:{reply}")
 
