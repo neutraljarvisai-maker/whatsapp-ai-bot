@@ -71,10 +71,8 @@ try:
     from googleapiclient.discovery import build
     from datetime import datetime, timedelta
     from dateutil import parser as dateparser
-    import pytz
 
     SCOPES = ["https://www.googleapis.com/auth/calendar"]
-    IST = pytz.timezone("Asia/Kolkata")
 
     def get_calendar_service():
         try:
@@ -136,9 +134,6 @@ try:
             dt = dateparser.parse(dt_str, fuzzy=True)
             if not dt:
                 return "⚠️ Couldn't understand the date/time."
-
-            if dt.tzinfo is None:
-                dt = IST.localize(dt)
 
             end_dt = dt + timedelta(hours=1)
 
