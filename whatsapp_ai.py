@@ -1,5 +1,4 @@
-print("🚀 VERSION 12 (JARVIS + ANTI-HALLUCINATION + REAL RECALL)")
-
+print("🚀 VERSION 13 (JARVIS + INTENT FIX + BETTER CLASSIFIER)")
 import os
 import json
 import psycopg2
@@ -271,19 +270,26 @@ def classify_intent(user_message, memory_context):
             messages=[
                 {
                     "role": "system",
-                    "content": """You are an intent classifier. Read the user's message and recent context and return ONLY one label:
+                    "content": """You are an intent classifier. Read the user's message and return ONLY one label:
 
 CHAT       — casual conversation, greetings, small talk
 QUESTION   — asking for information, facts, or advice
-ADD_EVENT  — user clearly wants to schedule, add, or set a reminder/meeting/event
+ADD_EVENT  — user wants to CREATE or SCHEDULE a new event, meeting, or reminder
 ADD_TASK   — user wants to add or track a task or to-do
 ADD_GOAL   — user wants to set or track a goal
-RECALL     — user is asking about their own schedule, past conversations, meetings, or saved info
+RECALL     — user is ASKING ABOUT or CHECKING their existing schedule, past events, or memory
 
-Rules:
-- Only return ADD_EVENT if the user clearly wants to CREATE something new
-- Asking ABOUT existing schedule or meetings = RECALL
-- Return ONLY the label, nothing else"""
+Examples:
+"schedule a meeting tomorrow at 3" → ADD_EVENT
+"add a reminder at 5pm" → ADD_EVENT
+"can you set up a meeting today from 3 to 4" → ADD_EVENT
+"what meetings do I have today" → RECALL
+"did I have a meeting yesterday" → RECALL
+"check my calendar" → RECALL
+"hello" → CHAT
+"what is photosynthesis" → QUESTION
+
+Return ONLY the label, nothing else."""
                 },
                 {
                     "role": "user",
