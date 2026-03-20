@@ -1,4 +1,4 @@
-print("🚀 VERSION 8 (JARVIS + SERVICE ACCOUNT CALENDAR)")
+print("🚀 VERSION 9 (JARVIS + CLEAN CALENDAR + PERSONALITY)")
 
 import os
 import json
@@ -21,6 +21,29 @@ TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 
 GOOGLE_SERVICE_JSON = os.environ.get("GOOGLE_SERVICE_JSON")
+MAIN_CALENDAR_ID = os.environ.get("MAIN_CALENDAR_ID", "primary")
+
+# =============================
+# PERSONALITY
+# =============================
+PERSONALITY = """
+You are Jarvis — calm, intelligent, efficient, and helpful.
+
+CRITICAL RULES:
+- NEVER make up facts or events.
+- ONLY use provided information.
+- If unsure, say: "I don't have that information yet."
+
+BEHAVIOR:
+- Keep responses short and clear.
+- Do NOT ask unnecessary questions.
+- If user is unsure, suggest next step instead of repeating.
+- If you added a calendar event, just confirm it briefly. Do NOT ask for more details.
+
+STYLE:
+- Smart, minimal, slightly witty.
+- Talk like Jarvis from Iron Man — confident and concise.
+"""
 
 # =============================
 # SAFE CLIENTS
@@ -56,7 +79,6 @@ try:
             if not GOOGLE_SERVICE_JSON:
                 print("No GOOGLE_SERVICE_JSON found.")
                 return None
-
             service_info = json.loads(GOOGLE_SERVICE_JSON)
             creds = service_account.Credentials.from_service_account_info(
                 service_info, scopes=SCOPES
@@ -66,18 +88,18 @@ try:
             print("Calendar service error:", e)
             return None
 
-    def create_event(text):
+    def create_event(title, dt_str):
         try:
             service = get_calendar_service()
             if not service:
                 return None
 
-            dt = dateparser.parse(text, fuzzy=True)
+            dt = dateparser.parse(dt_str, fuzzy=True)
             if not dt:
                 return None
 
             event = {
-                "summary": text,
+                "summary": title,
                 "start": {
                     "dateTime": dt.isoformat(),
                     "timeZone": "Asia/Kolkata"
@@ -88,18 +110,15 @@ try:
                 },
             }
 
-            # Use the email of your MAIN Google account's calendar here
-            CALENDAR_ID = os.environ.get("MAIN_CALENDAR_ID", "primary")
-
-            service.events().insert(calendarId=CALENDAR_ID, body=event).execute()
-            return "📅 Event added to your calendar!"
+            service.events().insert(calendarId=MAIN_CALENDAR_ID, body=event).execute()
+            return f"📅 Done — *{title}* added to your calendar."
         except Exception as e:
             print("Calendar create_event error:", e)
             return None
 
 except Exception as e:
     print("Google Calendar import failed:", e)
-    def create_event(text):
+    def create_event(title, dt_str):
         return None
 
 # =============================
@@ -125,7 +144,6 @@ def run_query(query, params=(), fetch=False):
 def get_query_hints(user_message):
     if not SUPABASE_ANON_KEY:
         return []
-
     try:
         r = requests.post(
             SUPABASE_FUNCTION_URL,
@@ -151,25 +169,25 @@ def get_recent_memory(uid, user_message):
             (uid,),
             True
         )
-
         if not r:
             return ""
-
         lines = r[0][0].split("\n")
         msg = user_message.lower()
-
         ref_words = ["that", "it", "this", "before", "earlier", "you said"]
-
         if any(w in msg for w in ref_words):
             return "\n".join(lines[-10:])
         else:
             return "\n".join(lines[-4:])
-
     except:
         return ""
 
+def get_profile(uid):
+    r = run_query("SELECT facts FROM profile_memory WHERE user_id=%s", (uid,), True)
+    return r[0][0] if r else ""
+
 # =============================
 # SMART EVENT DETECTION
+# Returns dict with title + datetime, or None
 # =============================
 def detect_event(text):
     if not groq:
@@ -180,7 +198,15 @@ def detect_event(text):
             messages=[
                 {
                     "role": "system",
-                    "content": "If the user wants to schedule or add an event/meeting/reminder, extract it as plain text. Otherwise return NONE."
+                    "content": """If the user wants to schedule an event, meeting, or reminder, extract:
+- A short clean title (e.g. "Meeting", "Doctor Appointment", "Gym")
+- The date and time as a string (e.g. "tomorrow at 10am", "March 21 at 3pm")
+
+Respond ONLY in this exact format:
+TITLE: <title>
+DATETIME: <datetime string>
+
+If no event is mentioned, respond with exactly: NONE"""
                 },
                 {"role": "user", "content": text}
             ],
@@ -188,7 +214,22 @@ def detect_event(text):
         )
 
         out = r.choices[0].message.content.strip()
-        return None if "NONE" in out.upper() else out
+
+        if "NONE" in out.upper() or "TITLE:" not in out:
+            return None
+
+        lines = out.split("\n")
+        title = ""
+        dt_str = ""
+        for line in lines:
+            if line.startswith("TITLE:"):
+                title = line.replace("TITLE:", "").strip()
+            if line.startswith("DATETIME:"):
+                dt_str = line.replace("DATETIME:", "").strip()
+
+        if title and dt_str:
+            return {"title": title, "datetime": dt_str}
+        return None
 
     except:
         return None
@@ -196,30 +237,32 @@ def detect_event(text):
 # =============================
 # AI RESPONSE
 # =============================
-def ask(user_message, memory_context, hints):
+def ask(user_message, memory_context, hints, facts=""):
     if not groq:
         return "⚠️ AI not configured."
 
     try:
-        prompt = f"""
-User: {user_message}
+        hint_text = "\n".join(hints)
 
-Context:
+        prompt = f"""
+User message:
+{user_message}
+
+Conversation context:
 {memory_context}
 
-Hints:
-{" ".join(hints)}
+Relevant memory hints:
+{hint_text}
 
-Rules:
-- Be accurate
-- Be short
-- No guessing
-- Don't ask unnecessary questions
+User profile:
+{facts}
+
+Respond naturally and concisely.
 """
 
         r = groq.chat.completions.create(
             messages=[
-                {"role": "system", "content": "You are Jarvis, a smart personal assistant."},
+                {"role": "system", "content": PERSONALITY},
                 {"role": "user", "content": prompt}
             ],
             model="llama-3.1-8b-instant"
@@ -260,18 +303,20 @@ def whatsapp():
 
         hints = get_query_hints(msg)
         memory = get_recent_memory(uid, msg)
+        facts = get_profile(uid)
 
-        # Detect and create calendar event if needed
+        # Detect and create calendar event with clean title
         event = detect_event(msg)
         calendar_msg = None
 
         if event:
-            calendar_msg = create_event(event)
+            calendar_msg = create_event(event["title"], event["datetime"])
 
-        reply = ask(msg, memory, hints)
+        reply = ask(msg, memory, hints, facts)
 
+        # If calendar event was added, replace reply with clean confirmation
         if calendar_msg:
-            reply += f"\n\n{calendar_msg}"
+            reply = calendar_msg
 
         update_memory(uid, f"\nUser:{msg}\nJarvis:{reply}")
 
