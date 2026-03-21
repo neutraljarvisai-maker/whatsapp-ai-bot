@@ -1,4 +1,5 @@
-print("🚀 VERSION 13 (JARVIS + INTENT FIX + BETTER CLASSIFIER)")
+print("🚀 VERSION 14 (JARVIS + SMARTER EVENT EXTRACTOR)")
+
 import os
 import json
 import psycopg2
@@ -320,9 +321,16 @@ def extract_event(user_message, memory_context):
             messages=[
                 {
                     "role": "system",
-                    "content": """Extract the event details from the user's message.
+                    "content": """Extract event details from the user's message AND recent conversation context.
 
-Generate a smart descriptive title based on context (e.g. "Chemistry Exam Prep", "Doctor Checkup", "Team Standup") — NOT generic like "Meeting" or "Reminder".
+Look through the entire context to find:
+- The time/date (even if mentioned earlier in the conversation)
+- A smart descriptive title based on what the user said (e.g. "School Project Session", "Doctor Checkup", "Team Standup")
+
+If no title is mentioned, generate one from context.
+If no date is found, use "today".
+If no time is found, use "12:00 PM".
+NEVER return "Not specified" — always make a best guess.
 
 Respond ONLY in this exact format:
 TITLE: <smart title>
@@ -330,7 +338,7 @@ DATETIME: <datetime string>"""
                 },
                 {
                     "role": "user",
-                    "content": f"Context: {memory_context}\n\nMessage: {user_message}"
+                    "content": f"Recent conversation:\n{memory_context}\n\nLatest message: {user_message}"
                 }
             ],
             model="llama-3.1-8b-instant"
