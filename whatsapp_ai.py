@@ -1,4 +1,4 @@
-print("🚀 VERSION 16 (JARVIS + SMART PROFILE FIELD SELECTION)")
+print("🚀 VERSION 17 (JARVIS + FIXED PROFILE + BETTER INTENT + LESS VERBOSE)")
 
 import os
 import json
@@ -32,23 +32,25 @@ You are Jarvis — calm, intelligent, efficient, and deeply personal.
 ABSOLUTE RULES — NEVER BREAK THESE:
 - NEVER invent names, people, places, events, or details not given to you.
 - NEVER fill in gaps with guesses. If you don't know, say: "I don't have that information."
-- ONLY use what is explicitly provided in context, profile, or hints.
+- ONLY use what is explicitly in the profile, context, or hints.
+- NEVER reference the conversation history awkwardly or robotically.
 
 BEHAVIOR:
-- Use the user's profile naturally — if you know their name, use it.
-- Be genuinely personal — reference what you know about them when relevant.
-- Keep responses short and clear.
+- Use the user's name naturally if you know it.
+- Be genuinely personal — only reference what you know when it's relevant.
+- Keep responses SHORT and direct — 1 to 3 sentences max for casual chat.
 - Do NOT ask unnecessary questions.
-- Do NOT assume details that weren't stated.
+- Do NOT over-explain or pad responses.
+- Do NOT say things like "I remember our last interaction" or "You said X earlier."
 
 STYLE:
 - Smart, minimal, slightly witty.
 - Talk like Jarvis from Iron Man — confident and concise.
-- Feel like you genuinely know this person.
+- Never sound like a customer service bot.
 """
 
 # =============================
-# ALL PROFILE COLUMNS
+# PROFILE COLUMNS
 # =============================
 PROFILE_COLUMNS = [
     "name", "age", "birthday", "gender", "location", "nationality", "languages", "religion",
@@ -72,7 +74,6 @@ PROFILE_COLUMNS = [
     "tools_workflow", "collaboration_style", "learning_style", "resources"
 ]
 
-# Always include these regardless of topic
 ALWAYS_INCLUDE = ["name", "communication_style", "personality"]
 
 # =============================
@@ -238,7 +239,7 @@ def get_query_hints(user_message):
         return []
 
 # =============================
-# CONVERSATIONS (RECENT CHAT)
+# CONVERSATIONS
 # =============================
 def get_recent_chat(uid, user_message):
     try:
@@ -270,95 +271,23 @@ def update_recent_chat(uid, text):
         print("Chat update error:", e)
 
 # =============================
-# SMART PROFILE FIELD SELECTOR
-# Picks only relevant fields using a tiny Groq call
+# PROFILE — LOAD
 # =============================
-def select_relevant_fields(user_message, intent):
-    # For RECALL always return all filled fields
-    if intent == "RECALL":
-        return None  # None = load all
-
-    if not groq:
-        return ALWAYS_INCLUDE
-
+def load_profile(uid):
     try:
-        columns_str = ", ".join(PROFILE_COLUMNS)
-
-        r = groq.chat.completions.create(
-            messages=[
-                {
-                    "role": "system",
-                    "content": f"""You are a profile field selector. Given a user message, return ONLY the most relevant field names from this list that would help answer it:
-
-{columns_str}
-
-Rules:
-- Return maximum 8 fields
-- Always include: name, communication_style
-- Return as comma separated list only, nothing else
-- If general chat, just return: name, communication_style, personality"""
-                },
-                {
-                    "role": "user",
-                    "content": user_message
-                }
-            ],
-            model="llama-3.1-8b-instant",
-            max_tokens=60
+        r = run_query(
+            "SELECT * FROM profile WHERE user_id=%s",
+            (uid,), True
         )
-
-        out = r.choices[0].message.content.strip()
-        fields = [f.strip() for f in out.split(",") if f.strip() in PROFILE_COLUMNS]
-
-        # Always add the always_include fields
-        for f in ALWAYS_INCLUDE:
-            if f not in fields:
-                fields.append(f)
-
-        return fields if fields else ALWAYS_INCLUDE
-
-    except Exception as e:
-        print("Field selector error:", e)
-        return ALWAYS_INCLUDE
-
-# =============================
-# PROFILE — LOAD (SMART)
-# =============================
-def load_profile(uid, fields=None):
-    try:
-        if fields is None:
-            # Load all filled fields
-            r = run_query(
-                "SELECT * FROM profile WHERE user_id=%s",
-                (uid,), True
-            )
-            if not r:
-                return {}
-            cols = ["user_id"] + PROFILE_COLUMNS
-            row = r[0]
-            profile = {}
-            for i, col in enumerate(cols):
-                if i < len(row) and row[i]:
-                    profile[col] = row[i]
-            return profile
-        else:
-            # Load only specific fields
-            safe_fields = [f for f in fields if f in PROFILE_COLUMNS]
-            if not safe_fields:
-                return {}
-            select_cols = ", ".join(safe_fields)
-            r = run_query(
-                f"SELECT {select_cols} FROM profile WHERE user_id=%s",
-                (uid,), True
-            )
-            if not r:
-                return {}
-            row = r[0]
-            profile = {}
-            for i, col in enumerate(safe_fields):
-                if i < len(row) and row[i]:
-                    profile[col] = row[i]
-            return profile
+        if not r:
+            return {}
+        cols = ["user_id"] + PROFILE_COLUMNS
+        row = r[0]
+        profile = {}
+        for i, col in enumerate(cols):
+            if i < len(row) and row[i]:
+                profile[col] = row[i]
+        return profile
     except Exception as e:
         print("Profile load error:", e)
         return {}
@@ -373,8 +302,7 @@ def format_profile(profile):
     return "\n".join(lines) if lines else ""
 
 # =============================
-# PROFILE — FACT EXTRACTOR
-# Runs silently after every message
+# PROFILE — FACT EXTRACTOR (FIXED)
 # =============================
 def extract_and_save_facts(uid, user_message, jarvis_reply, current_profile):
     if not groq:
@@ -387,72 +315,79 @@ def extract_and_save_facts(uid, user_message, jarvis_reply, current_profile):
             messages=[
                 {
                     "role": "system",
-                    "content": f"""You are a fact extractor. Extract NEW facts about the user from this conversation to save to their profile.
+                    "content": f"""You are a fact extractor. Extract NEW facts about the user from this conversation.
 
 Current profile:
-{profile_summary if profile_summary else "Empty"}
+{profile_summary if profile_summary else "Empty — extract anything useful"}
 
-Available fields:
+Available fields (use exact field names):
 {', '.join(PROFILE_COLUMNS)}
 
 Rules:
-- Only extract facts that are NEW or UPDATE existing info
-- Be concise — short phrases only
+- Extract facts that are NEW or UPDATE existing info
+- Short phrases only — no full sentences
 - Only facts about the USER, not Jarvis
-- If nothing new, return NONE
+- If nothing new, return exactly: NONE
 - Do NOT invent facts
 
-Format (one per line):
+Format — one per line:
 field_name: value
 
-Or if nothing new: NONE"""
+Example:
+name: Azlan
+school: some school
+active_projects: building a WhatsApp AI called Jarvis"""
                 },
                 {
                     "role": "user",
-                    "content": f"User: {user_message}\nJarvis: {jarvis_reply}"
+                    "content": f"User said: {user_message}\nJarvis replied: {jarvis_reply}"
                 }
             ],
             model="llama-3.1-8b-instant",
-            max_tokens=200
+            max_tokens=300
         )
 
         out = r.choices[0].message.content.strip()
+        print(f"Fact extractor raw output: {out}")
 
-        if out.upper() == "NONE" or not out:
+        if out.upper().startswith("NONE"):
             return
 
         updates = {}
         for line in out.split("\n"):
+            line = line.strip()
             if ":" in line:
                 parts = line.split(":", 1)
-                field = parts[0].strip().lower().replace(" ", "_")
+                field = parts[0].strip().lower().replace(" ", "_").replace("-", "_")
                 value = parts[1].strip()
-                if field in PROFILE_COLUMNS and value:
+                if field in PROFILE_COLUMNS and value and value.upper() != "NONE":
                     updates[field] = value
 
         if not updates:
+            print("No valid facts extracted")
             return
 
+        # Build safe upsert
+        set_clause = ", ".join([f"{k} = EXCLUDED.{k}" for k in updates.keys()])
         cols = ", ".join(["user_id"] + list(updates.keys()))
         placeholders = ", ".join(["%s"] * (len(updates) + 1))
-        update_clause = ", ".join([f"{k} = %s" for k in updates.keys()])
-        values = [uid] + list(updates.values()) + list(updates.values())
+        values = [uid] + list(updates.values())
 
         query = f"""
             INSERT INTO profile ({cols})
             VALUES ({placeholders})
             ON CONFLICT(user_id)
-            DO UPDATE SET {update_clause}
+            DO UPDATE SET {set_clause}
         """
 
         run_query(query, values)
-        print(f"Profile updated: {updates}")
+        print(f"✅ Profile updated: {updates}")
 
     except Exception as e:
-        print("Fact extractor error:", e)
+        print(f"Fact extractor error: {e}")
 
 # =============================
-# INTENT CLASSIFIER
+# INTENT CLASSIFIER (IMPROVED)
 # =============================
 def classify_intent(user_message, recent_chat):
     if not groq:
@@ -463,31 +398,37 @@ def classify_intent(user_message, recent_chat):
             messages=[
                 {
                     "role": "system",
-                    "content": """You are an intent classifier. Return ONLY one label:
+                    "content": """You are an intent classifier. Return ONLY one label.
 
-CHAT       — casual conversation, greetings, small talk
-QUESTION   — asking for information, facts, or advice
-ADD_EVENT  — user wants to CREATE or SCHEDULE a new event, meeting, or reminder
-ADD_TASK   — user wants to add or track a task or to-do
-ADD_GOAL   — user wants to set or track a goal
-RECALL     — user is ASKING ABOUT or CHECKING existing schedule, past events, or memory
+Labels:
+CHAT       — greetings, small talk, casual conversation
+QUESTION   — asking for information, facts, explanations, or advice
+ADD_EVENT  — user wants to CREATE or SCHEDULE something new (meeting, reminder, event)
+ADD_TASK   — user wants to add a task or to-do item
+ADD_GOAL   — user wants to set a goal
+RECALL     — user is asking ABOUT their existing schedule, past info, or saved memory
+
+Critical rules:
+- If user says "add", "schedule", "set", "create", "book", "remind me", "put" + time/date → ADD_EVENT
+- If user asks "what", "when", "do I have", "check my" → RECALL or QUESTION
+- Simple "hi", "hello", "hey", "ok", "yes", "no" → CHAT
+- "can you do a task" or vague requests → CHAT or QUESTION, NOT ADD_TASK
 
 Examples:
-"schedule a meeting tomorrow at 3" → ADD_EVENT
-"add a reminder at 5pm" → ADD_EVENT
-"can you set up a meeting today from 3 to 4" → ADD_EVENT
-"what meetings do I have today" → RECALL
-"did I have a meeting yesterday" → RECALL
+"add a meeting today at 3pm" → ADD_EVENT
+"meeting at 3pm" → ADD_EVENT
+"schedule something for tomorrow" → ADD_EVENT
+"what meetings do I have" → RECALL
 "check my calendar" → RECALL
-"hello" → CHAT
-"what is photosynthesis" → QUESTION
-"what's my name" → RECALL
+"hi" → CHAT
+"can you do a task for me" → CHAT
+"what is python" → QUESTION
 
-Return ONLY the label."""
+Return ONLY the label, nothing else."""
                 },
                 {
                     "role": "user",
-                    "content": f"Recent context:\n{recent_chat}\n\nMessage: {user_message}"
+                    "content": f"Message: {user_message}"
                 }
             ],
             model="llama-3.1-8b-instant",
@@ -495,33 +436,51 @@ Return ONLY the label."""
         )
 
         intent = r.choices[0].message.content.strip().upper()
-        valid = ["CHAT", "QUESTION", "ADD_EVENT", "ADD_TASK", "ADD_GOAL", "RECALL"]
-        return intent if intent in valid else "CHAT"
+        # Clean up in case model adds extra text
+        for label in ["ADD_EVENT", "ADD_TASK", "ADD_GOAL", "RECALL", "QUESTION", "CHAT"]:
+            if label in intent:
+                print(f"Intent: {label}")
+                return label
+        print(f"Intent: CHAT (fallback from: {intent})")
+        return "CHAT"
 
     except Exception as e:
         print("Intent classifier error:", e)
         return "CHAT"
 
 # =============================
-# EVENT EXTRACTOR
+# EVENT EXTRACTOR (BETTER NAMING)
 # =============================
-def extract_event(user_message, recent_chat):
+def extract_event(user_message, recent_chat, profile):
     if not groq:
         return None
+
+    name = profile.get("name", "")
+    active_projects = profile.get("active_projects", "")
 
     try:
         r = groq.chat.completions.create(
             messages=[
                 {
                     "role": "system",
-                    "content": """Extract event details from the conversation.
+                    "content": f"""Extract event details from the user's message.
 
-Generate a smart descriptive title based on context.
-Look through entire context to find time/date even if mentioned earlier.
+User context:
+- Name: {name if name else "unknown"}
+- Active projects: {active_projects if active_projects else "none known"}
+
+Generate a SMART, DESCRIPTIVE title — NOT generic names like "Meeting" or "Reminder".
+Use context clues to name it well:
+- "meeting with friends about school project" → "School Project Meetup"
+- "doctor appointment tomorrow" → "Doctor Appointment"  
+- "study session at 4pm" → "Study Session"
+- "meeting at 3pm" with no context → "Afternoon Meeting"
+
+Look through the full conversation to find time/date even if mentioned earlier.
 NEVER return "Not specified" — always make a best guess.
 If no date: use "today". If no time: use "12:00 PM".
 
-Respond ONLY in this format:
+Respond ONLY in this exact format:
 TITLE: <smart title>
 DATETIME: <datetime string>"""
                 },
@@ -565,25 +524,25 @@ def handle_recall(user_message, recent_chat, hints, profile):
             messages=[
                 {
                     "role": "system",
-                    "content": """You are Jarvis. Answer using ONLY the data provided.
+                    "content": """You are Jarvis. Answer using ONLY the data provided below.
 DO NOT invent any names, events, or details.
 If the answer is not in the data, say: "I don't have that information."
-Be short and direct."""
+Be short and direct — 1 to 2 sentences max."""
                 },
                 {
                     "role": "user",
                     "content": f"""User asked: {user_message}
 
-User profile:
-{profile_text}
+Profile:
+{profile_text if profile_text else "No profile data yet."}
 
-Upcoming calendar events:
+Upcoming events:
 {events_text}
 
 Recent conversation:
 {recent_chat}
 
-Memory hints:
+Hints:
 {" ".join(hints)}"""
                 }
             ],
@@ -604,21 +563,17 @@ def ask(user_message, recent_chat, hints, profile):
     try:
         profile_text = format_profile(profile)
 
-        prompt = f"""
-User message: {user_message}
+        prompt = f"""User message: {user_message}
 
-User profile:
+Profile:
 {profile_text if profile_text else "No profile data yet."}
 
 Recent conversation:
 {recent_chat}
 
-Memory hints:
-{" ".join(hints)}
+Hints: {" ".join(hints)}
 
-Respond naturally and concisely.
-IMPORTANT: Only use information provided. Do NOT invent anything.
-"""
+Reply naturally. Be short. Do NOT reference the conversation awkwardly."""
 
         r = groq.chat.completions.create(
             messages=[
@@ -646,21 +601,17 @@ def whatsapp():
         if not uid:
             return "OK"
 
-        # Load recent chat
+        # Load context
         recent_chat = get_recent_chat(uid, msg)
         hints = get_query_hints(msg)
+        profile = load_profile(uid)
 
-        # Classify intent first
+        # Classify intent
         intent = classify_intent(msg, recent_chat)
-        print(f"Intent: {intent}")
-
-        # Select only relevant profile fields (smart, cheap)
-        relevant_fields = select_relevant_fields(msg, intent)
-        profile = load_profile(uid, fields=relevant_fields)
 
         # Route
         if intent == "ADD_EVENT":
-            event = extract_event(msg, recent_chat)
+            event = extract_event(msg, recent_chat, profile)
             if event:
                 result = create_and_verify_event(event["title"], event["datetime"])
                 reply = result if result else "⚠️ Couldn't add the event. Try again."
@@ -668,19 +619,16 @@ def whatsapp():
                 reply = "I couldn't figure out the event details. Could you be more specific?"
 
         elif intent == "RECALL":
-            # For recall, load full profile
-            full_profile = load_profile(uid, fields=None)
-            reply = handle_recall(msg, recent_chat, hints, full_profile)
+            reply = handle_recall(msg, recent_chat, hints, profile)
 
         else:
             reply = ask(msg, recent_chat, hints, profile)
 
-        # Save recent chat
+        # Save chat
         update_recent_chat(uid, f"\nUser: {msg}\nJarvis: {reply}")
 
-        # Silently extract and save facts (use full profile for context)
-        full_profile_for_extraction = load_profile(uid, fields=None)
-        extract_and_save_facts(uid, msg, reply, full_profile_for_extraction)
+        # Silently extract and save facts
+        extract_and_save_facts(uid, msg, reply, profile)
 
         r = MessagingResponse()
         r.message(reply)
