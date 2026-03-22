@@ -1,4 +1,4 @@
-print("🚀 VERSION 18 (JARVIS + CORRECT DATETIME + NO CONFIDENT WRONG ANSWERS)")
+print("🚀 VERSION 20 (JARVIS + IST TIMEZONE + BETTER NAMING)")
 
 import os
 import json
@@ -456,8 +456,9 @@ def extract_event(user_message, recent_chat, profile):
     if not groq:
         return None
 
-    from datetime import datetime as dt_now
-    current_dt = dt_now.now().strftime("%A, %d %B %Y, %I:%M %p")
+    from datetime import datetime as dt_now, timezone, timedelta
+    ist_offset = timezone(timedelta(hours=5, minutes=30))
+    current_dt = dt_now.now(ist_offset).strftime("%A, %d %B %Y, %I:%M %p")
 
     name = profile.get("name", "")
     active_projects = profile.get("active_projects", "")
@@ -476,13 +477,14 @@ User context:
 - Name: {name if name else "unknown"}
 - Active projects: {active_projects if active_projects else "none known"}
 
-Generate a SMART, DESCRIPTIVE title — NOT generic names like "Meeting" or "Reminder".
+Generate a SMART, DESCRIPTIVE title based on what the meeting is actually about.
 Examples:
 - "meeting with friends about school project" → "School Project Meetup"
 - "doctor appointment tomorrow" → "Doctor Appointment"
 - "study session at 4pm" → "Study Session"
-- "meeting at 3pm" → "Afternoon Meeting"
-- "meeting at 4pm" → "Evening Prep Meeting"
+- "meeting at 3pm" with no context → "Meeting"
+- "catch up with John" → "Catchup with John"
+- If no context at all, just use "Meeting" — do NOT add time to the title
 
 CRITICAL TIME RULES:
 - Extract the EXACT time the user mentioned — do NOT change it
@@ -620,6 +622,11 @@ def whatsapp():
         hints = get_query_hints(msg)
         profile = load_profile(uid)
 
+        # ── PRE-EXTRACT: save any facts from incoming message first ──
+        # This way if user says "my name is Azlan", it's saved before reply
+        extract_and_save_facts(uid, msg, "", profile)
+        profile = load_profile(uid)  # reload with fresh facts
+
         # Classify intent
         intent = classify_intent(msg, recent_chat)
 
@@ -638,10 +645,8 @@ def whatsapp():
         else:
             reply = ask(msg, recent_chat, hints, profile)
 
-        # Save chat
+        # Save chat + extract any additional facts from the full exchange
         update_recent_chat(uid, f"\nUser: {msg}\nJarvis: {reply}")
-
-        # Silently extract and save facts
         extract_and_save_facts(uid, msg, reply, profile)
 
         r = MessagingResponse()
