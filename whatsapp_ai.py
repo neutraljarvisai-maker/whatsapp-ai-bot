@@ -1,4 +1,4 @@
-print("🚀 VERSION 24 (JARVIS + STRICT FACT EXTRACTOR)")
+print("🚀 VERSION 25 (JARVIS + CANCEL EVENTS + NO VOLUNTEER INFO)")
 
 import os
 import json
@@ -207,27 +207,84 @@ try:
         events = get_events_in_range(start_utc, end_utc)
         return events, label
 
+    def cancel_event(user_message, recent_chat):
+        """Find and delete the event the user wants to cancel"""
+        try:
+            service = get_calendar_service()
+            if not service:
+                return "⚠️ Calendar not available."
+
+            now_utc = datetime.utcnow()
+            future = now_utc + timedelta(days=30)
+            events_raw = service.events().list(
+                calendarId=MAIN_CALENDAR_ID,
+                timeMin=now_utc.isoformat() + "Z",
+                timeMax=future.isoformat() + "Z",
+                maxResults=10,
+                singleEvents=True,
+                orderBy="startTime"
+            ).execute().get("items", [])
+
+            if not events_raw:
+                return "You have no upcoming events to cancel."
+
+            event_list = []
+            for e in events_raw:
+                title = e.get("summary", "Untitled")
+                start = e.get("start", {}).get("dateTime", "")
+                eid = e.get("id", "")
+                if start:
+                    try:
+                        dt = dateparser.parse(start)
+                        display = dt.strftime("%A, %d %B at %I:%M %p")
+                    except:
+                        display = start
+                event_list.append({"id": eid, "title": title, "display": display})
+
+            if not groq:
+                return "⚠️ AI not available."
+
+            event_descriptions = "\n".join([f"{i+1}. {e['title']} — {e['display']}" for i, e in enumerate(event_list)])
+
+            r = groq.chat.completions.create(
+                messages=[
+                    {
+                        "role": "system",
+                        "content": """Given a list of events and the user's cancel request, return ONLY the number of the event to cancel.
+If unclear, return the number of the most likely match.
+Return ONLY a single number like: 1"""
+                    },
+                    {
+                        "role": "user",
+                        "content": f"User said: {user_message}\nRecent chat: {recent_chat}\n\nEvents:\n{event_descriptions}"
+                    }
+                ],
+                model="llama-3.1-8b-instant",
+                max_tokens=5
+            )
+
+            choice = r.choices[0].message.content.strip()
+            idx = int(choice) - 1
+
+            if 0 <= idx < len(event_list):
+                event_to_cancel = event_list[idx]
+                service.events().delete(
+                    calendarId=MAIN_CALENDAR_ID,
+                    eventId=event_to_cancel["id"]
+                ).execute()
+                return f"🗑️ *{event_to_cancel['title']}* on {event_to_cancel['display']} has been cancelled."
+            else:
+                return "Couldn't figure out which event to cancel. Could you be more specific?"
+
+        except Exception as e:
+            print("Cancel event error:", e)
+            return "⚠️ Couldn't cancel the event. Try again."
+
     def create_and_verify_event(title, dt_str):
         try:
             service = get_calendar_service()
             if not service:
                 return None
-            dt = dateparser.parse(dt_str, fuzzy=True)
-            if not dt:
-                return "⚠️ Couldn't understand the date/time."
-            end_dt = dt + timedelta(hours=1)
-            event_body = {
-                "summary": title,
-                "start": {"dateTime": dt.isoformat(), "timeZone": "Asia/Kolkata"},
-                "end": {"dateTime": end_dt.isoformat(), "timeZone": "Asia/Kolkata"},
-            }
-            created = service.events().insert(
-                calendarId=MAIN_CALENDAR_ID, body=event_body
-            ).execute()
-            event_id = created.get("id")
-            verified = service.events().get(
-                calendarId=MAIN_CALENDAR_ID, eventId=event_id
-            ).execute()
             saved_title = verified.get("summary", "")
             saved_start = verified.get("start", {}).get("dateTime", "")
             needs_fix = False
@@ -469,29 +526,29 @@ def classify_intent(user_message, recent_chat):
                     "content": """You are an intent classifier. Return ONLY one label.
 
 Labels:
-CHAT       — greetings, small talk, casual conversation
-QUESTION   — asking for information, facts, explanations, or advice
-ADD_EVENT  — user wants to CREATE or SCHEDULE something new (meeting, reminder, event)
-ADD_TASK   — user wants to add a task or to-do item
-ADD_GOAL   — user wants to set a goal
-RECALL     — user is asking ABOUT their existing schedule, past info, or saved memory
+CHAT          — greetings, small talk, casual conversation
+QUESTION      — asking for information, facts, explanations, or advice
+ADD_EVENT     — user wants to CREATE or SCHEDULE something new (meeting, reminder, event)
+CANCEL_EVENT  — user wants to DELETE or CANCEL an existing event
+ADD_TASK      — user wants to add a task or to-do item
+ADD_GOAL      — user wants to set a goal
+RECALL        — user is asking ABOUT their existing schedule, past info, or saved memory
 
 Critical rules:
-- ADD_EVENT only if user clearly wants to CREATE something — must have action words like "add", "schedule", "set", "create", "book", "remind me", "put"
+- ADD_EVENT only if user clearly wants to CREATE — must have action words like "add", "schedule", "set", "create", "book", "remind me"
+- CANCEL_EVENT if user says "cancel", "delete", "remove" + event/meeting
 - A question mark (?) almost always means RECALL or QUESTION, NOT ADD_EVENT
-- Mentioning a time without an action word = RECALL or QUESTION
-- "meeting at 3pm today?" → RECALL (it's a question, not a request to create)
-- "did i have", "do i have", "what meetings" → RECALL
+- "meeting at 3pm today?" → RECALL
 - Simple "hi", "hello", "hey", "ok", "yes", "no" → CHAT
 
 Examples:
 "add a meeting today at 3pm" → ADD_EVENT
 "schedule something for tomorrow" → ADD_EVENT
-"remind me at 5pm" → ADD_EVENT
-"meeting at 3pm today?" → RECALL
-"did i have any meetings yesterday?" → RECALL
+"cancel my meeting" → CANCEL_EVENT
+"cancel the 3pm meeting" → CANCEL_EVENT
+"delete tomorrow's event" → CANCEL_EVENT
 "what meetings do I have?" → RECALL
-"check my calendar" → RECALL
+"did I have meetings yesterday?" → RECALL
 "hi" → CHAT
 "what is python" → QUESTION
 
@@ -508,7 +565,7 @@ Return ONLY the label, nothing else."""
 
         intent = r.choices[0].message.content.strip().upper()
         # Clean up in case model adds extra text
-        for label in ["ADD_EVENT", "ADD_TASK", "ADD_GOAL", "RECALL", "QUESTION", "CHAT"]:
+        for label in ["CANCEL_EVENT", "ADD_EVENT", "ADD_TASK", "ADD_GOAL", "RECALL", "QUESTION", "CHAT"]:
             if label in intent:
                 print(f"Intent: {label}")
                 return label
@@ -665,7 +722,9 @@ Recent conversation:
 
 Hints: {" ".join(hints)}
 
-Reply naturally. Be short. Do NOT reference the conversation awkwardly."""
+Reply naturally. Be short.
+IMPORTANT: Do NOT mention calendar events, meetings, exams, or schedule info unless the user specifically asks about them.
+Do NOT reference the conversation awkwardly."""
 
         r = groq.chat.completions.create(
             messages=[
@@ -714,6 +773,9 @@ def whatsapp():
                 reply = result if result else "⚠️ Couldn't add the event. Try again."
             else:
                 reply = "I couldn't figure out the event details. Could you be more specific?"
+
+        elif intent == "CANCEL_EVENT":
+            reply = cancel_event(msg, recent_chat)
 
         elif intent == "RECALL":
             reply = handle_recall(msg, recent_chat, hints, profile)
