@@ -1,4 +1,4 @@
-print("🚀 VERSION 20 (JARVIS + IST TIMEZONE + BETTER NAMING)")
+print("🚀 VERSION 22 (JARVIS + NO RECALL HALLUCINATION + SMARTER INTENT)")
 
 import os
 import json
@@ -410,19 +410,22 @@ ADD_GOAL   — user wants to set a goal
 RECALL     — user is asking ABOUT their existing schedule, past info, or saved memory
 
 Critical rules:
-- If user says "add", "schedule", "set", "create", "book", "remind me", "put" + time/date → ADD_EVENT
-- If user asks "what", "when", "do I have", "check my" → RECALL or QUESTION
+- ADD_EVENT only if user clearly wants to CREATE something — must have action words like "add", "schedule", "set", "create", "book", "remind me", "put"
+- A question mark (?) almost always means RECALL or QUESTION, NOT ADD_EVENT
+- Mentioning a time without an action word = RECALL or QUESTION
+- "meeting at 3pm today?" → RECALL (it's a question, not a request to create)
+- "did i have", "do i have", "what meetings" → RECALL
 - Simple "hi", "hello", "hey", "ok", "yes", "no" → CHAT
-- "can you do a task" or vague requests → CHAT or QUESTION, NOT ADD_TASK
 
 Examples:
 "add a meeting today at 3pm" → ADD_EVENT
-"meeting at 3pm" → ADD_EVENT
 "schedule something for tomorrow" → ADD_EVENT
-"what meetings do I have" → RECALL
+"remind me at 5pm" → ADD_EVENT
+"meeting at 3pm today?" → RECALL
+"did i have any meetings yesterday?" → RECALL
+"what meetings do I have?" → RECALL
 "check my calendar" → RECALL
 "hi" → CHAT
-"can you do a task for me" → CHAT
 "what is python" → QUESTION
 
 Return ONLY the label, nothing else."""
@@ -478,13 +481,19 @@ User context:
 - Active projects: {active_projects if active_projects else "none known"}
 
 Generate a SMART, DESCRIPTIVE title based on what the meeting is actually about.
+STRICT RULES FOR TITLE:
+- NEVER include time, date, or "today/tomorrow" in the title
+- NEVER say "Meeting at 3pm" or "5pm Today" — time goes in DATETIME only
+- If no context: just use "Meeting"
+- If there's context: use it e.g. "School Project Meetup", "Doctor Appointment"
+
 Examples:
 - "meeting with friends about school project" → "School Project Meetup"
-- "doctor appointment tomorrow" → "Doctor Appointment"
+- "doctor appointment tomorrow at 3pm" → "Doctor Appointment"
 - "study session at 4pm" → "Study Session"
 - "meeting at 3pm" with no context → "Meeting"
-- "catch up with John" → "Catchup with John"
-- If no context at all, just use "Meeting" — do NOT add time to the title
+- "meeting at 5pm today" → "Meeting"
+- "catch up with John at 6pm" → "Catchup with John"
 
 CRITICAL TIME RULES:
 - Extract the EXACT time the user mentioned — do NOT change it
@@ -540,26 +549,25 @@ def handle_recall(user_message, recent_chat, hints, profile):
             messages=[
                 {
                     "role": "system",
-                    "content": """You are Jarvis. Answer using ONLY the data provided below.
-DO NOT invent any names, events, or details.
-If the answer is not in the data, say: "I don't have that information."
-Be short and direct — 1 to 2 sentences max."""
+                    "content": """You are Jarvis. Answer using ONLY the calendar data provided below.
+
+STRICT RULES:
+- ONLY use the calendar events listed below — nothing else
+- Do NOT use the conversation history to infer past events
+- Do NOT make up or guess any events
+- If asked about past events and none are listed, say: "I don't have any record of that."
+- If asked about upcoming events and none are listed, say: "You have no upcoming events."
+- Be short and direct — 1 to 2 sentences max."""
                 },
                 {
                     "role": "user",
                     "content": f"""User asked: {user_message}
 
-Profile:
-{profile_text if profile_text else "No profile data yet."}
-
-Upcoming events:
+Calendar events:
 {events_text}
 
-Recent conversation:
-{recent_chat}
-
-Hints:
-{" ".join(hints)}"""
+Profile:
+{profile_text if profile_text else "No profile data yet."}"""
                 }
             ],
             model="llama-3.1-8b-instant"
