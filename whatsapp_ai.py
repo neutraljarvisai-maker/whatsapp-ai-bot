@@ -1,4 +1,4 @@
-print("🚀 VERSION 22 (JARVIS + NO RECALL HALLUCINATION + SMARTER INTENT)")
+print("🚀 VERSION 23 (JARVIS + SMART TIME RANGE CALENDAR + NO VOLUNTEERING INFO)")
 
 import os
 import json
@@ -119,22 +119,26 @@ try:
             print("Calendar service error:", e)
             return None
 
-    def get_upcoming_events():
+    def get_events_in_range(time_min, time_max):
+        """Fetch events between two datetime objects (IST-aware)"""
         try:
             service = get_calendar_service()
             if not service:
                 return []
-            now = datetime.utcnow().isoformat() + "Z"
+
             result = service.events().list(
                 calendarId=MAIN_CALENDAR_ID,
-                timeMin=now,
-                maxResults=5,
+                timeMin=time_min.isoformat() + "Z",
+                timeMax=time_max.isoformat() + "Z",
+                maxResults=10,
                 singleEvents=True,
                 orderBy="startTime"
             ).execute()
+
             events = result.get("items", [])
             if not events:
                 return []
+
             formatted = []
             for e in events:
                 title = e.get("summary", "Untitled")
@@ -148,8 +152,60 @@ try:
                 formatted.append(f"• {title} — {display}")
             return formatted
         except Exception as e:
-            print("get_upcoming_events error:", e)
+            print("get_events_in_range error:", e)
             return []
+
+    def get_upcoming_events():
+        """Fetch next 5 upcoming events from now"""
+        now = datetime.utcnow()
+        future = now + timedelta(days=30)
+        return get_events_in_range(now, future)
+
+    def get_events_for_query(user_message):
+        """Determine time range from user's message and fetch relevant events"""
+        from datetime import timezone, timedelta as td
+        ist = timezone(td(hours=5, minutes=30))
+        now_ist = datetime.now(ist).replace(tzinfo=None)
+
+        msg = user_message.lower()
+
+        # Yesterday
+        if "yesterday" in msg:
+            start = (now_ist - timedelta(days=1)).replace(hour=0, minute=0, second=0)
+            end = (now_ist - timedelta(days=1)).replace(hour=23, minute=59, second=59)
+            label = "yesterday"
+
+        # Last week
+        elif "last week" in msg:
+            start = (now_ist - timedelta(days=7)).replace(hour=0, minute=0, second=0)
+            end = now_ist
+            label = "last week"
+
+        # Tomorrow
+        elif "tomorrow" in msg:
+            start = (now_ist + timedelta(days=1)).replace(hour=0, minute=0, second=0)
+            end = (now_ist + timedelta(days=1)).replace(hour=23, minute=59, second=59)
+            label = "tomorrow"
+
+        # This week
+        elif "this week" in msg or "week" in msg:
+            start = now_ist.replace(hour=0, minute=0, second=0)
+            end = now_ist + timedelta(days=7)
+            label = "this week"
+
+        # Today (default)
+        else:
+            start = now_ist.replace(hour=0, minute=0, second=0)
+            end = now_ist.replace(hour=23, minute=59, second=59)
+            label = "today"
+
+        # Convert IST to UTC for API
+        ist_offset = timedelta(hours=5, minutes=30)
+        start_utc = start - ist_offset
+        end_utc = end - ist_offset
+
+        events = get_events_in_range(start_utc, end_utc)
+        return events, label
 
     def create_and_verify_event(title, dt_str):
         try:
@@ -537,8 +593,9 @@ DATETIME: <full datetime e.g. "23 March 2026 at 4:00 PM">"""
 # RECALL HANDLER
 # =============================
 def handle_recall(user_message, recent_chat, hints, profile):
-    events = get_upcoming_events()
-    events_text = "\n".join(events) if events else "No upcoming events found."
+    # Fetch events for the relevant time period
+    events, time_label = get_events_for_query(user_message)
+    events_text = "\n".join(events) if events else f"No events found for {time_label}."
     profile_text = format_profile(profile)
 
     if not groq:
@@ -549,25 +606,25 @@ def handle_recall(user_message, recent_chat, hints, profile):
             messages=[
                 {
                     "role": "system",
-                    "content": """You are Jarvis. Answer using ONLY the calendar data provided below.
+                    "content": """You are Jarvis. Answer the user's SPECIFIC question using ONLY the calendar data provided.
 
 STRICT RULES:
-- ONLY use the calendar events listed below — nothing else
-- Do NOT use the conversation history to infer past events
+- ONLY answer what was asked — do NOT volunteer extra information
+- ONLY use the calendar events listed — nothing else
+- Do NOT use conversation history to infer events
 - Do NOT make up or guess any events
-- If asked about past events and none are listed, say: "I don't have any record of that."
-- If asked about upcoming events and none are listed, say: "You have no upcoming events."
-- Be short and direct — 1 to 2 sentences max."""
+- If no events found for the period asked, say so clearly
+- Be short and direct — 1 to 2 sentences max
+- Use the user's name if you know it"""
                 },
                 {
                     "role": "user",
                     "content": f"""User asked: {user_message}
 
-Calendar events:
+Calendar events for {time_label}:
 {events_text}
 
-Profile:
-{profile_text if profile_text else "No profile data yet."}"""
+User name: {profile.get('name', 'unknown')}"""
                 }
             ],
             model="llama-3.1-8b-instant"
