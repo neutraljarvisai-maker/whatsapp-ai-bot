@@ -1,4 +1,4 @@
-print("🚀 VERSION 25 (JARVIS + CANCEL EVENTS + NO VOLUNTEER INFO)")
+print("🚀 VERSION 26 (JARVIS + FIXED CANCEL + CANCEL ALL)")
 
 import os
 import json
@@ -250,9 +250,10 @@ try:
                 messages=[
                     {
                         "role": "system",
-                        "content": """Given a list of events and the user's cancel request, return ONLY the number of the event to cancel.
-If unclear, return the number of the most likely match.
-Return ONLY a single number like: 1"""
+                        "content": """You must return ONLY a single digit number — nothing else.
+No words, no explanation, no punctuation. Just the number.
+Example: 1
+Example: 2"""
                     },
                     {
                         "role": "user",
@@ -263,8 +264,25 @@ Return ONLY a single number like: 1"""
                 max_tokens=5
             )
 
+            # Handle "cancel all"
+            msg_lower = user_message.lower()
+            if any(w in msg_lower for w in ["all", "every", "all of them", "all meetings"]):
+                cancelled = []
+                for e in event_list:
+                    service.events().delete(
+                        calendarId=MAIN_CALENDAR_ID,
+                        eventId=e["id"]
+                    ).execute()
+                    cancelled.append(e["title"])
+                return f"🗑️ Cancelled {len(cancelled)} event(s): {', '.join(cancelled)}"
+
             choice = r.choices[0].message.content.strip()
-            idx = int(choice) - 1
+            # Extract first number found even if model adds extra text
+            import re
+            numbers = re.findall(r'\d+', choice)
+            if not numbers:
+                return "Couldn't figure out which event to cancel. Could you be more specific?"
+            idx = int(numbers[0]) - 1
 
             if 0 <= idx < len(event_list):
                 event_to_cancel = event_list[idx]
