@@ -1,4 +1,4 @@
-print("🚀 VERSION 17 (JARVIS + FIXED PROFILE + BETTER INTENT + LESS VERBOSE)")
+print("🚀 VERSION 18 (JARVIS + CORRECT DATETIME + NO CONFIDENT WRONG ANSWERS)")
 
 import os
 import json
@@ -34,14 +34,15 @@ ABSOLUTE RULES — NEVER BREAK THESE:
 - NEVER fill in gaps with guesses. If you don't know, say: "I don't have that information."
 - ONLY use what is explicitly in the profile, context, or hints.
 - NEVER reference the conversation history awkwardly or robotically.
+- If the user corrects you — accept it immediately and simply. Do NOT double down or justify wrong info.
 
 BEHAVIOR:
 - Use the user's name naturally if you know it.
-- Be genuinely personal — only reference what you know when it's relevant.
 - Keep responses SHORT and direct — 1 to 3 sentences max for casual chat.
 - Do NOT ask unnecessary questions.
 - Do NOT over-explain or pad responses.
 - Do NOT say things like "I remember our last interaction" or "You said X earlier."
+- If corrected, just say "You're right" and move on. Never argue.
 
 STYLE:
 - Smart, minimal, slightly witty.
@@ -449,11 +450,14 @@ Return ONLY the label, nothing else."""
         return "CHAT"
 
 # =============================
-# EVENT EXTRACTOR (BETTER NAMING)
+# EVENT EXTRACTOR (BETTER NAMING + REAL DATETIME)
 # =============================
 def extract_event(user_message, recent_chat, profile):
     if not groq:
         return None
+
+    from datetime import datetime as dt_now
+    current_dt = dt_now.now().strftime("%A, %d %B %Y, %I:%M %p")
 
     name = profile.get("name", "")
     active_projects = profile.get("active_projects", "")
@@ -465,24 +469,34 @@ def extract_event(user_message, recent_chat, profile):
                     "role": "system",
                     "content": f"""Extract event details from the user's message.
 
+TODAY IS: {current_dt} (IST)
+Use this as your reference for "today", "tomorrow", "tonight" etc.
+
 User context:
 - Name: {name if name else "unknown"}
 - Active projects: {active_projects if active_projects else "none known"}
 
 Generate a SMART, DESCRIPTIVE title — NOT generic names like "Meeting" or "Reminder".
-Use context clues to name it well:
+Examples:
 - "meeting with friends about school project" → "School Project Meetup"
-- "doctor appointment tomorrow" → "Doctor Appointment"  
+- "doctor appointment tomorrow" → "Doctor Appointment"
 - "study session at 4pm" → "Study Session"
-- "meeting at 3pm" with no context → "Afternoon Meeting"
+- "meeting at 3pm" → "Afternoon Meeting"
+- "meeting at 4pm" → "Evening Prep Meeting"
 
-Look through the full conversation to find time/date even if mentioned earlier.
-NEVER return "Not specified" — always make a best guess.
-If no date: use "today". If no time: use "12:00 PM".
+CRITICAL TIME RULES:
+- Extract the EXACT time the user mentioned — do NOT change it
+- "at 4pm" → 4:00 PM, NOT 12:00 PM
+- "at 3pm" → 3:00 PM
+- Only default to 12:00 PM if absolutely NO time was mentioned anywhere
+
+Look through the full conversation for time/date even if mentioned earlier.
+NEVER return "Not specified".
+If no date: use today's actual date. If truly no time: use 12:00 PM.
 
 Respond ONLY in this exact format:
 TITLE: <smart title>
-DATETIME: <datetime string>"""
+DATETIME: <full datetime e.g. "23 March 2026 at 4:00 PM">"""
                 },
                 {
                     "role": "user",
