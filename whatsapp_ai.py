@@ -1,4 +1,4 @@
-print("🚀 VERSION 23 (JARVIS + SMART TIME RANGE CALENDAR + NO VOLUNTEERING INFO)")
+print("🚀 VERSION 24 (JARVIS + STRICT FACT EXTRACTOR)")
 
 import os
 import json
@@ -372,28 +372,39 @@ def extract_and_save_facts(uid, user_message, jarvis_reply, current_profile):
             messages=[
                 {
                     "role": "system",
-                    "content": f"""You are a fact extractor. Extract NEW facts about the user from this conversation.
+                    "content": f"""You are a strict fact extractor. Your job is to save ONLY facts the user has EXPLICITLY and CLEARLY stated about themselves.
 
 Current profile:
-{profile_summary if profile_summary else "Empty — extract anything useful"}
+{profile_summary if profile_summary else "Empty"}
 
 Available fields (use exact field names):
 {', '.join(PROFILE_COLUMNS)}
 
-Rules:
-- Extract facts that are NEW or UPDATE existing info
+STRICT RULES — READ CAREFULLY:
+- ONLY extract facts the user has DIRECTLY and EXPLICITLY stated
+- NEVER infer, guess, or assume anything
+- NEVER extract facts from questions or hypotheticals
+- NEVER extract calendar events or meetings as profile facts
+- NEVER save anything Jarvis said — only what the USER said
+- If the user mentions something in passing (e.g. "stop hallucinating about my exam"), do NOT save "has exam"
+- Only save facts like: name, school, age, hobbies, projects they explicitly describe
+- If nothing was clearly stated, return exactly: NONE
 - Short phrases only — no full sentences
-- Only facts about the USER, not Jarvis
-- If nothing new, return exactly: NONE
-- Do NOT invent facts
+
+Good examples (user clearly stated these):
+"my name is Azlan" → name: Azlan
+"I'm in 10th grade" → grade: 10th
+"I'm building a WhatsApp AI" → active_projects: WhatsApp AI (Jarvis)
+
+Bad examples (do NOT extract these):
+"stop saying I have an exam" → do NOT save exam_dates
+"did I have a meeting?" → do NOT save anything
+"I want to schedule something" → do NOT save anything
 
 Format — one per line:
 field_name: value
 
-Example:
-name: Azlan
-school: some school
-active_projects: building a WhatsApp AI called Jarvis"""
+Or if nothing clearly stated: NONE"""
                 },
                 {
                     "role": "user",
