@@ -1,6 +1,4 @@
-
-
-print("🚀 VERSION 28 (JARVIS + CALENDAR FIX + NLU ROBUSTNESS)") # Version increment
+print("🚀 VERSION 29 (JARVIS + CALENDAR FIX + NLU ROBUSTNESS + SYNTAX CLEANUP)") # Version increment
 
 import os
 import json
@@ -8,7 +6,6 @@ import re
 import psycopg2
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
-from twilio.rest import Client
 import requests
 from datetime import datetime, timedelta, timezone # For time manipulations
 import dateparser # For parsing various date/time formats
@@ -115,6 +112,7 @@ except Exception as e:
 twilio_client = None
 try:
     if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN:
+        # Import Twilio Client directly if not already imported implicitly
         from twilio.rest import Client as TwilioClient
         twilio_client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
         logger.info("Twilio client initialized.")
@@ -142,7 +140,7 @@ try:
         Authenticates using service account JSON from GOOGLE_SERVICE_JSON env var.
         Returns a Google Calendar API service object or None if authentication fails.
         """
-        global google_calendar_service # Use the global service object
+        global google_calendar_service # Use the global service object for efficiency
         if google_calendar_service:
             return google_calendar_service
 
@@ -169,6 +167,7 @@ try:
         """Fetches and formats events within a specified time range."""
         service = get_calendar_service()
         if not service:
+            logger.warning("Calendar service not available, cannot fetch events.")
             return []
 
         try:
@@ -199,14 +198,14 @@ try:
                             dt = dateparser.parse(start)
                             display = dt.strftime("%A, %d %B")
                     except Exception as parse_err:
-                        logger.warning(f"Could not parse date '{start}': {parse_err}")
-                        display = start # Fallback to raw string
+                        logger.warning(f"Could not parse date '{start}' for event '{title}': {parse_err}")
+                        display = start # Fallback to raw string if parsing fails
                 else:
                     display = "Time unknown"
                 formatted_events.append(f"• {title} — {display}")
             return formatted_events
         except Exception as e:
-            logger.error(f"Error fetching events in range: {e}")
+            logger.error(f"Error fetching events in range for calendar '{MAIN_CALENDAR_ID}': {e}")
             return []
 
     def get_upcoming_events():
@@ -221,6 +220,7 @@ try:
         # Assume local time for parsing keywords like 'today', 'tomorrow'
         # Then convert to UTC for Google API. Defaulting to IST offset for parsing.
         try:
+            # Use a common offset like IST for parsing relative terms
             ist = timezone(td(hours=5, minutes=30))
             now_ist = datetime.now(ist).replace(tzinfo=None) # Get current time in IST, naive for dateparser
         except Exception as tz_err:
@@ -272,6 +272,7 @@ try:
         """
         service = get_calendar_service()
         if not service:
+            logger.warning("Calendar service not available for cancel_event.")
             return "⚠️ Calendar service is unavailable. Please check configuration."
 
         try:
@@ -305,7 +306,8 @@ try:
                     try:
                         dt = dateparser.parse(start)
                         display_time = dt.strftime("%A, %d %B at %I:%M %p")
-                    except:
+                    except Exception as parse_err:
+                        logger.warning(f"Could not parse date '{start}' for event '{title}' in cancel_event: {parse_err}")
                         display_time = start # Fallback if parsing fails
                 
                 event_list_for_display.append(f"• {title} — {display_time}")
@@ -327,6 +329,7 @@ try:
 
             # If not cancelling all, use LLM to pick the specific event
             if not groq:
+                logger.warning("Groq client not available for cancel_event event picking.")
                 return "⚠️ AI is not available to help pick the event. Please specify which event to cancel (e.g., 'cancel meeting with John')."
 
             event_descriptions_for_llm = "\n".join([f"{i+1}. {e['title']} — {e['display']}" for i, e in enumerate(event_list_for_llm_context)])
@@ -377,7 +380,7 @@ Example Output: 0 (if unsure or no match)"""
                 return "I couldn't determine which event you want to cancel. Please be more specific or list the events again."
 
         except Exception as e:
-            logger.error(f"Error in cancel_event: {e}")
+            logger.error(f"Error in cancel_event: {e}", exc_info=True)
             return "⚠️ An error occurred while trying to cancel the event. Please try again."
 
     # =============================
@@ -390,11 +393,11 @@ Example Output: 0 (if unsure or no match)"""
         """
         service = get_calendar_service()
         if not service:
+            logger.warning("Google Calendar service not available for create_and_verify_event.")
             return "⚠️ Google Calendar service is unavailable. Please check configuration."
 
         try:
             # Parse the date and time string robustly
-            # dateparser's "prefer dates from future" helps with ambiguous inputs
             dt = dateparser.parse(dt_str, settings={'PREFER_DATES_FROM': 'future'})
             if not dt:
                 return "⚠️ I couldn't understand the date and time you provided. Please try again with a clear format like 'tomorrow at 3 PM' or 'May 15th 10:00 AM'."
@@ -405,26 +408,23 @@ Example Output: 0 (if unsure or no match)"""
             # We'll parse the input, assume it's intended for IST based on common user locale,
             # and convert it to UTC for the API.
             
-            # Define IST timezone offset
             ist_offset_td = timedelta(hours=5, minutes=30)
             ist_timezone = timezone(ist_offset_td)
 
-            # Ensure dt is timezone-aware. If naive, assume it's local time (IST)
+            # Ensure dt is timezone-aware. If naive, assume it's local time (IST) and make it aware.
             if dt.tzinfo is None:
                 dt_aware = dt.replace(tzinfo=ist_timezone)
             else:
                 dt_aware = dt # Already timezone-aware
 
-            # Convert the aware datetime object to UTC for Google API
+            # Convert the aware datetime object to UTC for Google API submission
             dt_utc = dt_aware.astimezone(timezone.utc)
 
             # Calculate end time (defaulting to 1 hour duration)
-            # Future enhancements could parse durations like "for 2 hours"
             event_duration = timedelta(hours=1)
             end_dt_utc = dt_utc + event_duration
 
             # Format for Google Calendar API: ISO 8601 string with timezone offset
-            # For dateTime: "2023-10-27T10:00:00-07:00" or "2023-10-27T17:00:00Z" for UTC
             start_iso = dt_utc.isoformat(timespec='seconds') # e.g., '2023-10-27T17:00:00+00:00'
             end_iso = end_dt_utc.isoformat(timespec='seconds')
 
@@ -436,7 +436,7 @@ Example Output: 0 (if unsure or no match)"""
             }
             
             # --- Event Creation ---
-            logger.info(f"Attempting to create event: {title} for {start_iso}")
+            logger.info(f"Attempting to create event: '{title}' for '{start_iso}'")
             created_event = service.events().insert(
                 calendarId=MAIN_CALENDAR_ID,
                 body=event_body
@@ -444,69 +444,79 @@ Example Output: 0 (if unsure or no match)"""
             
             event_id = created_event.get("id")
             if not event_id:
-                logger.error("Event created but no ID returned.")
+                logger.error("Event created but no ID returned from Google Calendar API.")
                 return "⚠️ Event was created, but I couldn't get its details to confirm. Please check your calendar."
 
             # --- Verification and Correction Step ---
-            # Fetch the event that was just created to verify
             verified_event = service.events().get(
                 calendarId=MAIN_CALENDAR_ID,
                 eventId=event_id
             ).execute()
 
             saved_title = verified_event.get("summary", "")
-            saved_start_time_raw = verified_event.get("start", {}).get("dateTime", "")
-            saved_end_time_raw = verified_event.get("end", {}).get("dateTime", "")
+            # Extract saved start/end time strings (can be dateTime or date)
+            saved_start_raw = verified_event.get("start", {}).get("dateTime", verified_event.get("start", {}).get("date"))
+            saved_end_raw = verified_event.get("end", {}).get("dateTime", verified_event.get("end", {}).get("date"))
 
             needs_correction = False
-            correction_note = ""
-
+            
             # Check if title matches
             if saved_title != title:
-                logger.warning(f"Title mismatch: Expected '{title}', got '{saved_title}'. Correcting.")
+                logger.warning(f"Title mismatch for event '{created_event.get('id')}': Expected '{title}', got '{saved_title}'. Marking for correction.")
                 needs_correction = True
 
-            # Check if start time is substantially different (allowing for small API rounding differences)
-            if saved_start_time_raw:
+            # Check if start/end times are substantially different (allowing for small API rounding differences)
+            if saved_start_raw and dt_utc: # Only compare if we have both original and saved times
                 try:
-                    saved_dt_utc = dateparser.parse(saved_start_time_raw.replace('Z', '+00:00')) # Parse ISO string
+                    # Parse saved time, treating 'Z' as UTC
+                    if saved_start_raw.endswith('Z'):
+                        saved_dt_utc = dateparser.parse(saved_start_raw)
+                    else: # If not Z, it might be an offset or a date. Handle as best as possible.
+                        saved_dt_utc = dateparser.parse(saved_start_raw.replace('Z', '+00:00')) # Try parsing with offset
+
+                    # Compare actual UTC datetime objects
                     if abs((saved_dt_utc - dt_utc).total_seconds()) > 60: # If more than 60 seconds difference
-                        logger.warning(f"Start time mismatch: Expected '{dt_utc.isoformat()}', got '{saved_dt_utc.isoformat()}'. Correcting.")
+                        logger.warning(f"Start time mismatch for event '{created_event.get('id')}': Original UTC '{dt_utc.isoformat()}', Saved UTC '{saved_dt_utc.isoformat()}'. Marking for correction.")
                         needs_correction = True
                 except Exception as dt_parse_err:
-                    logger.warning(f"Could not parse saved start time '{saved_start_time_raw}' for verification: {dt_parse_err}")
-                    needs_correction = True # Treat as a mismatch if parsing fails
-            else: # If no start time found after creation, that's a major issue
-                logger.error("Saved event has no start time after creation.")
-                needs_correction = True
+                    logger.warning(f"Could not parse saved start time '{saved_start_raw}' for verification of event '{created_event.get('id')}': {dt_parse_err}")
+                    needs_correction = True # Treat as a mismatch if parsing fails during verification
+            elif not saved_start_raw and title != "NOT_SPECIFIED": # If no start time was saved for a titled event
+                 logger.error(f"Saved event '{created_event.get('id')}' has no start time after creation.")
+                 needs_correction = True
 
             if needs_correction:
-                logger.info(f"Attempting to update event {event_id} due to verification issues.")
-                # Re-apply the original event_body to update
+                logger.info(f"Attempting to update event '{created_event.get('id')}' due to verification issues.")
+                # Re-apply the original event_body to update. This is often sufficient to fix subtle API glitches.
                 service.events().update(
                     calendarId=MAIN_CALENDAR_ID,
                     eventId=event_id,
                     body=event_body
                 ).execute()
                 correction_note = " *(auto-corrected ✓)*"
-                logger.info(f"Event '{title}' updated successfully.")
+                logger.info(f"Event '{title}' (ID: {event_id}) updated successfully.")
+            else:
+                correction_note = "" # No correction needed
 
             # --- Format for User Display (using IST) ---
-            # Convert original UTC datetime back to IST for display
-            display_dt_aware_ist = dt_utc.astimezone(ist_timezone)
-            display_date_str = display_dt_aware_ist.strftime("%A, %d %B")
-            time_range_str = display_dt_aware_ist.strftime("%I:%M %p")
-            
-            # Handle all-day events if they were somehow created (unlikely with dateTime)
-            if 'date' in verified_event.get('start', {}):
+            # Convert original UTC datetime back to IST for display if it was a timed event
+            if 'dateTime' in verified_event.get('start', {}):
+                display_dt_aware_ist = dt_utc.astimezone(ist_timezone)
+                display_date_str = display_dt_aware_ist.strftime("%A, %d %B")
+                time_range_str = display_dt_aware_ist.strftime("%I:%M %p")
+            # Handle all-day events if they were created (using 'date' field)
+            elif 'date' in verified_event.get('start', {}):
                 display_dt_all_day = dateparser.parse(verified_event['start']['date'])
                 display_date_str = display_dt_all_day.strftime("%A, %d %B")
                 time_range_str = "All day"
+            else: # Neither dateTime nor date found, fallback
+                display_date_str = "Date unknown"
+                time_range_str = "Time unknown"
 
             return f"📅 *{title}*\n🕐 {display_date_str} at {time_range_str}{correction_note}\n✅ Added to calendar."
 
         except Exception as e:
-            logger.error(f"Error in create_and_verify_event: {e}")
+            logger.error(f"Error in create_and_verify_event: {e}", exc_info=True)
             # Attempt cleanup if an event_id was generated but an error occurred later
             if 'event_id' in locals() and event_id:
                 try:
@@ -520,29 +530,19 @@ Example Output: 0 (if unsure or no match)"""
 except ImportError:
     logger.error("Google Calendar libraries not found. Please install them: pip install google-api-python-client google-auth google-auth-oauthlib google-auth-httplib2 dateparser")
     # Define dummy functions if imports fail
-    def get_calendar_service():
-        return None
-    def get_upcoming_events():
-        return []
-    def get_events_for_query(user_message):
-        return [], "today"
-    def cancel_event(user_message, recent_chat, profile_name):
-        return "⚠️ Google Calendar functionality is not available due to missing libraries."
-    def create_and_verify_event(title, dt_str):
-        return "⚠️ Google Calendar functionality is not available due to missing libraries."
+    def get_calendar_service(): return None
+    def get_upcoming_events(): return []
+    def get_events_for_query(user_message): return [], "today"
+    def cancel_event(user_message, recent_chat, profile_name): return "⚠️ Google Calendar functionality is not available due to missing libraries."
+    def create_and_verify_event(title, dt_str): return "⚠️ Google Calendar functionality is not available due to missing libraries."
 except Exception as e:
-    logger.error(f"An unexpected error occurred during Google Calendar setup: {e}")
+    logger.error(f"An unexpected error occurred during Google Calendar setup: {e}", exc_info=True)
     # Define dummy functions if setup fails
-    def get_calendar_service():
-        return None
-    def get_upcoming_events():
-        return []
-    def get_events_for_query(user_message):
-        return [], "today"
-    def cancel_event(user_message, recent_chat, profile_name):
-        return "⚠️ Google Calendar functionality is unavailable due to an unexpected error."
-    def create_and_verify_event(title, dt_str):
-        return "⚠️ Google Calendar functionality is unavailable due to an unexpected error."
+    def get_calendar_service(): return None
+    def get_upcoming_events(): return []
+    def get_events_for_query(user_message): return [], "today"
+    def cancel_event(user_message, recent_chat, profile_name): return "⚠️ Google Calendar functionality is unavailable due to an unexpected error."
+    def create_and_verify_event(title, dt_str): return "⚠️ Google Calendar functionality is unavailable due to an unexpected error."
 
 
 # =============================
@@ -552,7 +552,7 @@ def run_query(query, params=(), fetch=False):
     """
     Executes a database query safely. Manages connection lifecycle.
     Returns fetched results if fetch is True, otherwise None.
-    Returns empty list for fetches on error.
+    Returns empty list [] for fetches on error.
     """
     conn = None
     try:
@@ -568,12 +568,12 @@ def run_query(query, params=(), fetch=False):
         conn.commit() # Commit changes for INSERT, UPDATE, DELETE
         return result
     except psycopg2.Error as e:
-        logger.error(f"Database error executing query: {query.split(' ')[0]} - {e}")
+        logger.error(f"Database error executing query: {query.split(' ')[0]} - {e}", exc_info=True)
         if conn:
             conn.rollback() # Rollback on error
         return [] if fetch else None # Return empty list for fetching, None otherwise
     except Exception as e:
-        logger.error(f"Unexpected error in run_query: {e}")
+        logger.error(f"Unexpected error in run_query: {e}", exc_info=True)
         if conn:
             conn.rollback()
         return [] if fetch else None
@@ -603,10 +603,10 @@ def get_query_hints(user_message):
         response.raise_for_status() # Raise an exception for bad status codes (4xx or 5xx)
         return response.json().get("hints", [])
     except requests.exceptions.RequestException as e:
-        logger.error(f"Error calling Supabase AI endpoint: {e}")
+        logger.error(f"Error calling Supabase AI endpoint: {e}", exc_info=True)
         return []
     except Exception as e:
-        logger.error(f"Unexpected error processing Supabase AI response: {e}")
+        logger.error(f"Unexpected error processing Supabase AI response: {e}", exc_info=True)
         return []
 
 # =============================
@@ -617,7 +617,7 @@ def get_recent_chat(uid, user_message):
     try:
         r = run_query(
             "SELECT recent_chat FROM conversations WHERE user_id=%s",
-            (uid,), True
+            (uid,), fetch=True
         )
         if not r or not r[0] or not r[0][0]: # If no history found or it's empty
             return ""
@@ -638,7 +638,7 @@ def get_recent_chat(uid, user_message):
         return relevant_history
         
     except Exception as e:
-        logger.error(f"Error retrieving recent chat history for {uid}: {e}")
+        logger.error(f"Error retrieving recent chat history for {uid}: {e}", exc_info=True)
         return ""
 
 def update_recent_chat(uid, user_message, jarvis_response_text):
@@ -661,15 +661,16 @@ def update_recent_chat(uid, user_message, jarvis_response_text):
         if len(lines) > 50:
             combined_chat = "\n".join(lines[-50:])
         
+        # Use ON CONFLICT to insert or update
         run_query("""
             INSERT INTO conversations (user_id, recent_chat)
             VALUES (%s, %s)
             ON CONFLICT(user_id)
-            DO UPDATE SET recent_chat = conversations.recent_chat || %s;
+            DO UPDATE SET recent_chat = COALESCE(conversations.recent_chat, '') || %s;
         """, (uid, new_log_entry, "\n" + new_log_entry)) # Append new entry to existing
         logger.info(f"Updated conversation history for user {uid}.")
     except Exception as e:
-        logger.error(f"Error updating recent chat history for {uid}: {e}")
+        logger.error(f"Error updating recent chat history for {uid}: {e}", exc_info=True)
 
 # =============================
 # PROFILE MANAGEMENT
@@ -677,6 +678,8 @@ def update_recent_chat(uid, user_message, jarvis_response_text):
 def load_profile(uid):
     """Loads user profile data from the database."""
     try:
+        # Ensure columns are correctly quoted if they are keywords or contain spaces/hyphens
+        # Using f-string for column names is generally safe if they are controlled by code, but parameterized queries are better for values.
         query = f"SELECT {', '.join(PROFILE_COLUMNS)} FROM profile WHERE user_id=%s;"
         r = run_query(query, (uid,), fetch=True)
         
@@ -684,16 +687,14 @@ def load_profile(uid):
             return {} # Return empty dict if no profile exists
 
         profile_data = {}
-        # Get column names for the current query to map results to keys
-        # This assumes the query selects columns in the order of PROFILE_COLUMNS
-        # A more robust way: use `cursor.description` if you have access to cursor
+        # Map result row to profile columns
         for i, col_name in enumerate(PROFILE_COLUMNS):
-            # Ensure index is within bounds of the returned row
+            # Ensure index is within bounds and the value is not None
             if i < len(r[0]) and r[0][i] is not None:
                 profile_data[col_name] = r[0][i]
         return profile_data
     except Exception as e:
-        logger.error(f"Error loading profile for user {uid}: {e}")
+        logger.error(f"Error loading profile for user {uid}: {e}", exc_info=True)
         return {}
 
 def format_profile_for_llm(profile):
@@ -702,9 +703,10 @@ def format_profile_for_llm(profile):
         return "No profile data available."
     
     lines = []
-    for k in PROFILE_COLUMNS: # Iterate in defined order
+    # Iterate through defined PROFILE_COLUMNS to ensure order and inclusion of all possible fields
+    for k in PROFILE_COLUMNS: 
         v = profile.get(k)
-        if v and v.strip(): # Only include if value exists and is not empty
+        if v and str(v).strip(): # Only include if value exists and is not empty or just whitespace
             lines.append(f"{k.replace('_', ' ').title()}: {v}")
 
     return "\n".join(lines) if lines else "No profile data available."
@@ -790,7 +792,7 @@ Your output MUST be plain text, one fact per line. If no facts, output ONLY 'NON
                 # Normalize field names to match PROFILE_COLUMNS (e.g., "Favorite Subject" -> "favourite_subject")
                 normalized_field = field_raw.replace(" ", "_").replace("-", "_")
                 
-                # Check if the normalized field exists in our PROFILE_COLUMNS
+                # Check if the normalized field exists in our PROFILE_COLUMNS and has a value
                 if normalized_field in PROFILE_COLUMNS and value:
                     updates[normalized_field] = value
                 else:
@@ -801,7 +803,6 @@ Your output MUST be plain text, one fact per line. If no facts, output ONLY 'NON
             return
 
         # Prepare the SQL query for updating or inserting profile data
-        # This uses INSERT ... ON CONFLICT to atomically insert or update
         set_clause = ", ".join([f"{k} = EXCLUDED.{k}" for k in updates.keys()]) # For the DO UPDATE part
         column_names = ["user_id"] + list(updates.keys())
         placeholders = ", ".join(["%s"] * (len(updates) + 1)) # For VALUES part
@@ -818,7 +819,7 @@ Your output MUST be plain text, one fact per line. If no facts, output ONLY 'NON
         logger.info(f"Profile updated for user {uid} with facts: {updates}")
 
     except Exception as e:
-        logger.error(f"Error during fact extraction and saving for user {uid}: {e}")
+        logger.error(f"Error during fact extraction and saving for user {uid}: {e}", exc_info=True)
 
 # =============================
 # INTENT CLASSIFICATION
@@ -838,7 +839,7 @@ Your task is to analyze the user's input and categorize their primary intent.
 Respond ONLY with a single, uppercase label.
 
 Available Intents:
--   **GREETING**: Informal greetings ('hello', 'hi', 'hey', 'halo', 'sup', 'yo').
+-   **GREETING**: Informal greetings ('hello', 'hi', 'hey', 'halo', 'sup', 'yo'). This is for initial pleasantries.
 -   **QUESTION**: Asking for factual information, explanations, advice, or definitions. Usually involves 'what is', 'how does', 'why does', 'explain'.
 -   **ADD_EVENT**: User wants to CREATE or SCHEDULE a new event, meeting, reminder, or appointment. Keywords: 'add', 'schedule', 'set', 'create', 'book', 'remind me', 'meeting', 'event'.
 -   **CANCEL_EVENT**: User wants to DELETE or CANCEL an existing event or meeting. Keywords: 'cancel', 'delete', 'remove', 'don't want'.
@@ -890,7 +891,7 @@ Examples:
             return "CHAT" # Fallback
 
     except Exception as e:
-        logger.error(f"Error classifying intent for message '{user_message}': {e}. Defaulting to CHAT.")
+        logger.error(f"Error classifying intent for message '{user_message}': {e}", exc_info=True)
         return "CHAT"
 
 # =============================
@@ -943,7 +944,7 @@ INSTRUCTIONS:
     -   If no date is specified, assume TODAY's date (using the provided CURRENT DATE & TIME as reference).
     -   Provide the datetime in a clear format that `dateparser.parse()` can understand, e.g., "23 March 2026 at 4:00 PM".
     -   Handle relative terms like "tomorrow", "next week", "Friday evening".
-3.  **OUTPUT FORMAT:** Respond EXACTLY in the following format:
+3.  **OUTPUT FORMAT:** Respond ONLY in the following exact format:
     TITLE: <Your smart title>
     DATETIME: <Full datetime string like "23 March 2026 at 4:00 PM">
     If you cannot extract a title or datetime, return "TITLE: NOT_SPECIFIED\nDATETIME: NOT_SPECIFIED".
@@ -976,14 +977,14 @@ CRITICAL RULES:
                 dt_str = line.replace("DATETIME:", "").strip()
 
         if title == "NOT_SPECIFIED" or dt_str == "NOT_SPECIFIED":
-            logger.warning(f"Could not extract full event details from message: '{user_message}'. Output was: {output_text}")
+            logger.warning(f"Could not extract full event details from message: '{user_message}'. LLM output: {output_text}")
             return None # Indicate failure to extract
 
         logger.info(f"Extracted event: Title='{title}', Datetime='{dt_str}'")
         return {"title": title, "datetime": dt_str}
 
     except Exception as e:
-        logger.error(f"Error during event detail extraction for message '{user_message}': {e}")
+        logger.error(f"Error during event detail extraction for message '{user_message}': {e}", exc_info=True)
         return None
 
 # =============================
@@ -1045,14 +1046,15 @@ Recent chat context:
         
         answer = response.choices[0].message.content.strip()
         
-        # Fallback if LLM fails to provide a good answer
-        if not answer or answer.startswith("I cannot") or answer.startswith("I don't have"):
+        # Fallback if LLM fails to provide a good answer or returns generic phrases
+        if not answer or ("cannot" in answer.lower() and "help" in answer.lower()) or answer.lower().startswith("i don't have"):
+            logger.warning(f"LLM recall response was unhelpful, returning raw event data. Response: '{answer}'")
             return f"Regarding {time_label}: {events_text}"
         
         return answer
 
     except Exception as e:
-        logger.error(f"Error in handle_recall for message '{user_message}': {e}. Returning raw event data.")
+        logger.error(f"Error in handle_recall for message '{user_message}': {e}", exc_info=True)
         return f"Regarding {time_label}: {events_text}"
 
 # =============================
@@ -1088,26 +1090,28 @@ Contextual hints from AI:
 Your task is to respond conversationally and concisely, embodying Jarvis.
 Avoid mentioning calendar events or schedules unless the user explicitly asks about them.
 Be smart, direct, and slightly witty if appropriate, but never robotic or overly friendly.
-Keep your response short (1-3 sentences)."""
+Keep your response short (1-3 sentences).
+"""
             }
         ]
 
         response = groq.chat.completions.create(
             messages=llm_prompt_messages,
-            model="llama-3.1-8b-instant",
+            model="llama-3.1-8b-instant", # Use a fast model
             max_tokens=150
         )
         
         answer = response.choices[0].message.content.strip()
         
-        # Basic fallback if LLM returns something unhelpful
+        # Basic fallback if LLM returns something unhelpful or too short
         if not answer or len(answer) < 5:
+            logger.warning(f"General AI response too short or empty. Falling back. Response: '{answer}'")
             return "Is there something specific I can help you with?"
         
         return answer
 
     except Exception as e:
-        logger.error(f"Error in ask_jarvis_generally for message '{user_message}': {e}")
+        logger.error(f"Error in ask_jarvis_generally for message '{user_message}': {e}", exc_info=True)
         return "I'm sorry, I'm experiencing a temporary issue. Please try again later."
 
 # =============================
@@ -1129,11 +1133,8 @@ def whatsapp_webhook():
         logger.info(f"Received message from {uid}: '{incoming_msg}'")
 
         # --- Load Context ---
-        # Fetch recent chat history for context
         recent_chat_context = get_recent_chat(uid, incoming_msg)
-        # Fetch hints from Supabase if available
         query_hints = get_query_hints(incoming_msg)
-        # Load user profile data
         user_profile = load_profile(uid)
         profile_name = user_profile.get("name", "user") # Get name for persona use
 
@@ -1152,6 +1153,7 @@ def whatsapp_webhook():
 
         if user_intent == "ADD_EVENT":
             event_details = extract_event_details(incoming_msg, recent_chat_context, user_profile)
+            # Ensure both title and datetime were successfully extracted
             if event_details and event_details.get("title") != "NOT_SPECIFIED" and event_details.get("datetime") != "NOT_SPECIFIED":
                 jarvis_response_text = create_and_verify_event(event_details["title"], event_details["datetime"])
             else:
@@ -1166,9 +1168,9 @@ def whatsapp_webhook():
         elif user_intent == "GREETING":
             # If it's just a greeting, respond with a conversational greeting
             # Use the generic ask function with a prompt focused on greetings
-            greeting_message = "Just a simple hello to see if you're there."
+            greeting_message = "Just a simple hello to see if you're there." # More specific prompt for greetings
             jarvis_response_text = ask_jarvis_generally(greeting_message, recent_chat_context, query_hints, user_profile)
-            if not jarvis_response_text or len(jarvis_response_text) < 5: # Basic fallback
+            if not jarvis_response_text or len(jarvis_response_text) < 5: # Basic fallback if LLM fails
                 jarvis_response_text = f"Hello {profile_name}! How can I help you today?"
 
         elif user_intent == "QUESTION":
@@ -1190,9 +1192,7 @@ def whatsapp_webhook():
 
         # --- Send Response ---
         response = MessagingResponse()
-        message_obj = response.message(jarvis_response_text)
-        
-        # Optional: Add media, links, etc. based on response content here if needed
+        response.message(jarvis_response_text)
         
         return str(response)
 
@@ -1204,13 +1204,19 @@ def whatsapp_webhook():
         return str(response)
 
 # =============================
-# MAIN APPLICATION RUN BLOCK
+# MAIN APPLICATION RUN BLOCK (for Gunicorn / Production)
 # =============================
 if __name__ == "__main__":
-    # When running on platforms like Railway, PORT is provided by the environment.
-    # Locally, it defaults to 8080.
-    PORT = int(os.environ.get("PORT", 8080))
-    logger.info(f"Starting Flask application on port {PORT}")
+    # This block is primarily for local development and testing.
+    # When deployed on platforms like Railway with a Procfile, Gunicorn will run the app
+    # and this __main__ block will not be executed to start the dev server.
     
-  
-```
+    # Get the port from environment variables or default to 8080 for local testing
+    port = int(os.environ.get("PORT", 8080))
+    logger.info(f"Flask Dev Server: Starting Flask application on port {port}")
+    logger.info("NOTE: For production deployment on Railway, Gunicorn is used via Procfile. This dev server is for local testing only.")
+    
+    # Use Flask's development server for local testing.
+    # DO NOT use app.run() with debug=True in production.
+    # Comment out the next line if you are deploying to Railway and rely solely on Procfile/Gunicorn.
+    app.run(host="0.0.0.0", port=port, debug=False) # Set debug=False for more realistic local testing
