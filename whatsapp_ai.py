@@ -1,7 +1,8 @@
-print("🚀 VERSION 26 (JARVIS + FIXED CANCEL + CANCEL ALL)")
+print("🚀 VERSION 27 (CALENDAR FIXED)")
 
 import os
 import json
+import re
 import psycopg2
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
@@ -120,7 +121,6 @@ try:
             return None
 
     def get_events_in_range(time_min, time_max):
-        """Fetch events between two datetime objects (IST-aware)"""
         try:
             service = get_calendar_service()
             if not service:
@@ -156,50 +156,38 @@ try:
             return []
 
     def get_upcoming_events():
-        """Fetch next 5 upcoming events from now"""
         now = datetime.utcnow()
         future = now + timedelta(days=30)
         return get_events_in_range(now, future)
 
     def get_events_for_query(user_message):
-        """Determine time range from user's message and fetch relevant events"""
         from datetime import timezone, timedelta as td
         ist = timezone(td(hours=5, minutes=30))
         now_ist = datetime.now(ist).replace(tzinfo=None)
 
         msg = user_message.lower()
 
-        # Yesterday
         if "yesterday" in msg:
             start = (now_ist - timedelta(days=1)).replace(hour=0, minute=0, second=0)
             end = (now_ist - timedelta(days=1)).replace(hour=23, minute=59, second=59)
             label = "yesterday"
-
-        # Last week
         elif "last week" in msg:
             start = (now_ist - timedelta(days=7)).replace(hour=0, minute=0, second=0)
             end = now_ist
             label = "last week"
-
-        # Tomorrow
         elif "tomorrow" in msg:
             start = (now_ist + timedelta(days=1)).replace(hour=0, minute=0, second=0)
             end = (now_ist + timedelta(days=1)).replace(hour=23, minute=59, second=59)
             label = "tomorrow"
-
-        # This week
         elif "this week" in msg or "week" in msg:
             start = now_ist.replace(hour=0, minute=0, second=0)
             end = now_ist + timedelta(days=7)
             label = "this week"
-
-        # Today (default)
         else:
             start = now_ist.replace(hour=0, minute=0, second=0)
             end = now_ist.replace(hour=23, minute=59, second=59)
             label = "today"
 
-        # Convert IST to UTC for API
         ist_offset = timedelta(hours=5, minutes=30)
         start_utc = start - ist_offset
         end_utc = end - ist_offset
@@ -208,7 +196,6 @@ try:
         return events, label
 
     def cancel_event(user_message, recent_chat):
-        """Find and delete the event the user wants to cancel"""
         try:
             service = get_calendar_service()
             if not service:
@@ -241,6 +228,18 @@ try:
                         display = start
                 event_list.append({"id": eid, "title": title, "display": display})
 
+            # Handle "cancel all"
+            msg_lower = user_message.lower()
+            if any(w in msg_lower for w in ["all", "every", "all of them", "all meetings"]):
+                cancelled = []
+                for e in event_list:
+                    service.events().delete(
+                        calendarId=MAIN_CALENDAR_ID,
+                        eventId=e["id"]
+                    ).execute()
+                    cancelled.append(e["title"])
+                return f"🗑️ Cancelled {len(cancelled)} event(s): {', '.join(cancelled)}"
+
             if not groq:
                 return "⚠️ AI not available."
 
@@ -264,21 +263,7 @@ Example: 2"""
                 max_tokens=5
             )
 
-            # Handle "cancel all"
-            msg_lower = user_message.lower()
-            if any(w in msg_lower for w in ["all", "every", "all of them", "all meetings"]):
-                cancelled = []
-                for e in event_list:
-                    service.events().delete(
-                        calendarId=MAIN_CALENDAR_ID,
-                        eventId=e["id"]
-                    ).execute()
-                    cancelled.append(e["title"])
-                return f"🗑️ Cancelled {len(cancelled)} event(s): {', '.join(cancelled)}"
-
             choice = r.choices[0].message.content.strip()
-            # Extract first number found even if model adds extra text
-            import re
             numbers = re.findall(r'\d+', choice)
             if not numbers:
                 return "Couldn't figure out which event to cancel. Could you be more specific?"
@@ -298,56 +283,108 @@ Example: 2"""
             print("Cancel event error:", e)
             return "⚠️ Couldn't cancel the event. Try again."
 
+    # =============================
+    # CREATE EVENT — FIXED
+    # =============================
     def create_and_verify_event(title, dt_str):
         try:
             service = get_calendar_service()
             if not service:
-                return None
+                return "⚠️ Calendar not available."
+
+            # Parse the datetime string
+            dt = dateparser.parse(dt_str)
+            if not dt:
+                return "⚠️ Couldn't understand the date/time. Try again."
+
+            # Convert IST to UTC
+            ist_offset = timedelta(hours=5, minutes=30)
+            dt_utc = dt - ist_offset
+
+            event_body = {
+                "summary": title,
+                "start": {
+                    "dateTime": dt_utc.isoformat() + "Z",
+                    "timeZone": "Asia/Kolkata"
+                },
+                "end": {
+                    "dateTime": (dt_utc + timedelta(hours=1)).isoformat() + "Z",
+                    "timeZone": "Asia/Kolkata"
+                },
+            }
+
+            # Create the event
+            created = service.events().insert(
+                calendarId=MAIN_CALENDAR_ID,
+                body=event_body
+            ).execute()
+
+            event_id = created.get("id")
+            if not event_id:
+                return "⚠️ Event created but couldn't verify it."
+
+            # Verify it was saved correctly
+            verified = service.events().get(
+                calendarId=MAIN_CALENDAR_ID,
+                eventId=event_id
+            ).execute()
+
             saved_title = verified.get("summary", "")
             saved_start = verified.get("start", {}).get("dateTime", "")
+
+            fix_note = ""
             needs_fix = False
             if saved_title != title:
                 needs_fix = True
             if saved_start:
                 saved_dt = dateparser.parse(saved_start)
-                if abs((saved_dt.replace(tzinfo=None) - dt.replace(tzinfo=None)).total_seconds()) > 60:
+                if abs((saved_dt.replace(tzinfo=None) - dt_utc).total_seconds()) > 60:
                     needs_fix = True
+
             if needs_fix:
                 service.events().update(
-                    calendarId=MAIN_CALENDAR_ID, eventId=event_id, body=event_body
+                    calendarId=MAIN_CALENDAR_ID,
+                    eventId=event_id,
+                    body=event_body
                 ).execute()
                 fix_note = " *(auto-corrected ✓)*"
-            else:
-                fix_note = ""
+
             display_dt = dt.strftime("%A, %d %B at %I:%M %p")
-            return f"📅 *{title}*\n🕐 {display_dt}{fix_note}\n✅ Verified & saved."
+            return f"📅 *{title}*\n🕐 {display_dt}{fix_note}\n✅ Added to calendar."
+
         except Exception as e:
-            print("Calendar error:", e)
-            return None
+            print("Calendar create error:", e)
+            return "⚠️ Couldn't add the event. Try again."
 
 except Exception as e:
     print("Google Calendar import failed:", e)
     def get_upcoming_events():
         return []
+    def get_events_for_query(user_message):
+        return [], "today"
+    def cancel_event(user_message, recent_chat):
+        return "⚠️ Calendar not available."
     def create_and_verify_event(title, dt_str):
-        return None
+        return "⚠️ Calendar not available."
 
 # =============================
 # DB SAFE
 # =============================
 def run_query(query, params=(), fetch=False):
+    conn = None
     try:
         conn = psycopg2.connect(DATABASE_URL, sslmode="require")
         cursor = conn.cursor()
         cursor.execute(query, params)
         result = cursor.fetchall() if fetch else None
         conn.commit()
-        cursor.close()
-        conn.close()
         return result
     except Exception as e:
         print("DB ERROR:", e)
         return [] if fetch else None
+    finally:
+        if conn:
+            conn.close()
 
 # =============================
 # QUERY AI (SUPABASE)
@@ -388,7 +425,8 @@ def get_recent_chat(uid, user_message):
             return "\n".join(lines[-14:])
         else:
             return "\n".join(lines[-8:])
-    except:
+    except Exception as e:
+        print("get_recent_chat error:", e)
         return ""
 
 def update_recent_chat(uid, text):
@@ -434,7 +472,7 @@ def format_profile(profile):
     return "\n".join(lines) if lines else ""
 
 # =============================
-# PROFILE — FACT EXTRACTOR (FIXED)
+# PROFILE — FACT EXTRACTOR
 # =============================
 def extract_and_save_facts(uid, user_message, jarvis_reply, current_profile):
     if not groq:
@@ -510,7 +548,6 @@ Or if nothing clearly stated: NONE"""
             print("No valid facts extracted")
             return
 
-        # Build safe upsert
         set_clause = ", ".join([f"{k} = EXCLUDED.{k}" for k in updates.keys()])
         cols = ", ".join(["user_id"] + list(updates.keys()))
         placeholders = ", ".join(["%s"] * (len(updates) + 1))
@@ -530,7 +567,7 @@ Or if nothing clearly stated: NONE"""
         print(f"Fact extractor error: {e}")
 
 # =============================
-# INTENT CLASSIFIER (IMPROVED)
+# INTENT CLASSIFIER
 # =============================
 def classify_intent(user_message, recent_chat):
     if not groq:
@@ -582,7 +619,6 @@ Return ONLY the label, nothing else."""
         )
 
         intent = r.choices[0].message.content.strip().upper()
-        # Clean up in case model adds extra text
         for label in ["CANCEL_EVENT", "ADD_EVENT", "ADD_TASK", "ADD_GOAL", "RECALL", "QUESTION", "CHAT"]:
             if label in intent:
                 print(f"Intent: {label}")
@@ -595,7 +631,7 @@ Return ONLY the label, nothing else."""
         return "CHAT"
 
 # =============================
-# EVENT EXTRACTOR (BETTER NAMING + REAL DATETIME)
+# EVENT EXTRACTOR
 # =============================
 def extract_event(user_message, recent_chat, profile):
     if not groq:
@@ -672,17 +708,16 @@ DATETIME: <full datetime e.g. "23 March 2026 at 4:00 PM">"""
             return {"title": title, "datetime": dt_str}
         return None
 
-    except:
+    except Exception as e:
+        print("extract_event error:", e)
         return None
 
 # =============================
 # RECALL HANDLER
 # =============================
 def handle_recall(user_message, recent_chat, hints, profile):
-    # Fetch events for the relevant time period
     events, time_label = get_events_for_query(user_message)
     events_text = "\n".join(events) if events else f"No events found for {time_label}."
-    profile_text = format_profile(profile)
 
     if not groq:
         return events_text
@@ -775,8 +810,7 @@ def whatsapp():
         hints = get_query_hints(msg)
         profile = load_profile(uid)
 
-        # ── PRE-EXTRACT: save any facts from incoming message first ──
-        # This way if user says "my name is Azlan", it's saved before reply
+        # Pre-extract facts from incoming message
         extract_and_save_facts(uid, msg, "", profile)
         profile = load_profile(uid)  # reload with fresh facts
 
@@ -801,7 +835,7 @@ def whatsapp():
         else:
             reply = ask(msg, recent_chat, hints, profile)
 
-        # Save chat + extract any additional facts from the full exchange
+        # Save chat + extract facts from full exchange
         update_recent_chat(uid, f"\nUser: {msg}\nJarvis: {reply}")
         extract_and_save_facts(uid, msg, reply, profile)
 
