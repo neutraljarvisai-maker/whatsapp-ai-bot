@@ -1,33 +1,5 @@
-Okay, thank you for providing your current code! This gives me a much clearer picture.
 
-Your current code is quite different from the example I provided earlier, particularly in its use of Supabase for AI queries, a more complex `PROFILE_COLUMNS` structure, and a different approach to Google Calendar initialization (likely using service accounts).
 
-I will now integrate the critical fixes and improvements we discussed into *your* code. This means I'll be directly editing and enhancing your provided structure, rather than just handing you a completely new file that might not fit your existing setup.
-
-Here’s what I'll be patching and refining in your code:
-
-1.  **`create_and_verify_event` Function:** This will be the primary fix for your calendar creation issue. I'll ensure it correctly creates events, handles timezones, verifies the creation, and offers a more robust way to re-apply updates if needed.
-2.  **LLM Integration for NLU & Event Extraction:**
-    *   **Intent Classification (`classify_intent`):** I'll fine-tune this to be more robust, handling informal greetings like "halo" as `CHAT` or `GREETING` and correctly identifying `ADD_EVENT`, `RECALL`, `CANCEL_EVENT`, etc.
-    *   **Event Extraction (`extract_event`):** This function will be improved to produce smarter titles and more accurate `DATETIME` strings, using the context of your profile and recent chat. It will also default dates/times more gracefully.
-    *   **Profile Fact Extraction (`extract_and_save_facts`):** This will be refined to be more strict and to only save explicit facts, preventing hallucination of profile data.
-    *   **`ask` Function:** This will be modified to better use the `PERSONALITY` and profile data for more natural responses when no specific action is required.
-    *   **`handle_recall` Function:** This will be improved to use the `events_text` more effectively within the LLM prompt for more precise answers.
-3.  **Memory Management:** Your `conversations` table seems to be storing `recent_chat` as a string. While functional, I'll ensure the update logic is robust. If you intended to use a more structured memory (like JSONB for chat history), we'd need to adjust the `run_query` and the table definition. For now, I'll keep your current string-based `recent_chat` approach but ensure it's updated correctly.
-4.  **Google Calendar Initialization:** I'll ensure the `get_calendar_service` function correctly uses your `GOOGLE_SERVICE_JSON` environment variable and handles potential errors more gracefully.
-5.  **General Robustness:** Minor improvements to error handling and logging where appropriate.
-
----
-
-**Please find your complete, updated code below.** You can copy-paste this directly into your main application file (e.g., `app.py`, `jarvis.py`, etc.).
-
-**Important Reminders:**
-*   **Environment Variables:** Ensure all your environment variables are correctly set on Railway (`DATABASE_URL`, `GROQ_API_KEY`, `SUPABASE_ANON_KEY`, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `GOOGLE_SERVICE_JSON`, `MAIN_CALENDAR_ID`).
-*   **`GOOGLE_SERVICE_JSON`:** This needs to be the *content* of your Google service account JSON key, stored as a single environment variable.
-*   **Database Schema:** Make sure you have the `conversations` table with `user_id` and `recent_chat` columns, and the `profile` table with `user_id` and columns corresponding to `PROFILE_COLUMNS`.
-*   **`Procfile` and `requirements.txt`:** Ensure these are correctly configured on Railway as discussed before.
-
-```python
 print("🚀 VERSION 28 (JARVIS + CALENDAR FIX + NLU ROBUSTNESS)") # Version increment
 
 import os
@@ -1240,12 +1212,5 @@ if __name__ == "__main__":
     PORT = int(os.environ.get("PORT", 8080))
     logger.info(f"Starting Flask application on port {PORT}")
     
-    # Use a production-ready WSGI server like Gunicorn for deployment (handled by Procfile).
-    # For local development, Flask's built-in server is fine for testing.
-    # app.run(host="0.0.0.0", port=PORT, debug=True) # Uncomment for local development if desired
-    
-    # The following is a placeholder; actual running on Railway is via Procfile and gunicorn.
-    # If running this script directly (e.g. `python your_app.py`), this part would run Flask's dev server.
-    logger.info("Application is ready to run. Use 'gunicorn app:app' (or similar) for production deployment.")
-
+  
 ```
