@@ -1,0 +1,6 @@
+pyautogui
+Pillow
+requests
+vosk
+sounddevice
+numpy
