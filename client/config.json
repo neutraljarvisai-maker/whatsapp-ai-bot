@@ -1,0 +1,5 @@
+{
+    "JARVIS_BACKEND_URL": "https://your-railway-app-url.railway.app",
+    "JARVIS_USER_ID": "default_user",
+    "VOSK_MODEL_PATH": "model"
+}

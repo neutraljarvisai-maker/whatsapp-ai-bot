@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        body {
+            background: rgba(10, 10, 15, 0.85);
+            color: #00d4ff;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            border-radius: 15px;
+            border: 2px solid #005577;
+            overflow: hidden;
+            margin: 0;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
+        .header {
+            padding: 10px;
+            text-align: center;
+            background: rgba(0, 85, 119, 0.3);
+            -webkit-app-region: drag;
+            font-weight: bold;
+            font-size: 0.8em;
+            letter-spacing: 2px;
+        }
+        .sphere-container {
+            flex-grow: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+        }
+        .sphere {
+            width: 100px;
+            height: 100px;
+            background: radial-gradient(circle, #00d4ff 0%, #005577 70%, transparent 100%);
+            border-radius: 50%;
+            box-shadow: 0 0 30px #00d4ff;
+            animation: pulse 2s infinite ease-in-out;
+        }
+        @keyframes pulse {
+            0% { transform: scale(0.9); opacity: 0.7; box-shadow: 0 0 20px #00d4ff; }
+            50% { transform: scale(1.1); opacity: 1; box-shadow: 0 0 50px #00d4ff; }
+            100% { transform: scale(0.9); opacity: 0.7; box-shadow: 0 0 20px #00d4ff; }
+        }
+        .chat-container {
+            height: 200px;
+            padding: 10px;
+            background: rgba(0, 0, 0, 0.5);
+            overflow-y: auto;
+            font-size: 0.9em;
+        }
+        .input-container {
+            padding: 10px;
+            display: flex;
+        }
+        input {
+            flex-grow: 1;
+            background: rgba(0, 85, 119, 0.2);
+            border: 1px solid #005577;
+            color: #00d4ff;
+            padding: 5px;
+            border-radius: 5px;
+            outline: none;
+        }
+        .status {
+            font-size: 0.7em;
+            text-align: center;
+            padding: 5px;
+            color: #0088aa;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">BAT-JARVIS SYSTEM v1.0</div>
+    <div class="sphere-container">
+        <div class="sphere"></div>
+    </div>
+    <div id="status" class="status">SYSTEM IDLE</div>
+    <div class="chat-container" id="chat">
+        <div>Welcome, Master Wayne.</div>
+    </div>
+    <div class="input-container">
+        <input type="text" id="userInput" placeholder="Awaiting instructions...">
+    </div>
+
+    <script>
+        const axios = require('axios');
+        const { ipcRenderer } = require('electron');
+        const fs = require('fs');
+        const path = require('path');
+
+        // Load Config
+        let config = { JARVIS_BACKEND_URL: 'http://localhost:5000', JARVIS_USER_ID: 'default_user' };
+        try {
+            const configPath = path.join(__dirname, '..', 'config.json');
+            if (fs.existsSync(configPath)) {
+                config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+            }
+        } catch (err) {
+            console.error('Error loading config:', err);
+        }
+        const input = document.getElementById('userInput');
+        const chat = document.getElementById('chat');
+        const status = document.getElementById('status');
+
+        input.addEventListener('keypress', async (e) => {
+            if (e.key === 'Enter') {
+                const text = input.value;
+                input.value = '';
+                addMessage('You', text);
+
+                status.innerText = 'PROCESSING...';
+                try {
+                    const response = await axios.post(`${config.JARVIS_BACKEND_URL}/chat`, {
+                        user_id: config.JARVIS_USER_ID,
+                        message: text
+                    });
+                    addMessage('Jarvis', response.data.response);
+
+                    if (response.data.intent === 'TASK') {
+                        status.innerText = 'EXECUTING TASK...';
+                        ipcRenderer.send('run-task', response.data.task);
+                    }
+                } catch (err) {
+                    addMessage('System', 'Connection to brain lost.');
+                }
+                status.innerText = 'SYSTEM IDLE';
+            }
+        });
+
+        ipcRenderer.on('task-status', (event, msg) => {
+            status.innerText = msg.toUpperCase();
+        });
+
+        ipcRenderer.on('task-finished', (event, msg) => {
+            addMessage('System', msg);
+            status.innerText = 'SYSTEM IDLE';
+        });
+
+        function addMessage(sender, text) {
+            const div = document.createElement('div');
+            div.innerHTML = `<strong>${sender}:</strong> ${text}`;
+            chat.appendChild(div);
+            chat.scrollTop = chat.scrollHeight;
+        }
+    </script>
+</body>
+</html>

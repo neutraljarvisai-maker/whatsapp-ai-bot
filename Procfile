@@ -1,1 +1,2 @@
-web: gunicorn whatsapp_ai:app
+web: gunicorn desktop_backend:app
+whatsapp: gunicorn whatsapp_ai:app
