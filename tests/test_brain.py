@@ -6,24 +6,12 @@ class TestJarvisBrain(unittest.TestCase):
     def setUp(self):
         self.brain = JarvisBrain()
 
-    @patch('google.generativeai.GenerativeModel.generate_content')
-    def test_classify_intent_greeting(self, mock_gen):
-        mock_gen.return_value.text = "GREETING"
-        intent = self.brain.classify_intent("Hello Jarvis", "No context")
-        self.assertEqual(intent, "GREETING")
-
-    @patch('google.generativeai.GenerativeModel.generate_content')
-    def test_classify_intent_task(self, mock_gen):
-        mock_gen.return_value.text = "TASK"
-        intent = self.brain.classify_intent("Open chrome and search for batman", "No context")
-        self.assertEqual(intent, "TASK")
-
-    @patch('google.generativeai.GenerativeModel.generate_content')
-    def test_extract_facts(self, mock_gen):
-        mock_gen.return_value.text = '{"name": "Bruce Wayne", "location": "Gotham"}'
-        facts = self.brain.extract_facts("My name is Bruce Wayne and I live in Gotham", "Acknowledged.", "", ["name", "location"])
-        self.assertEqual(facts['name'], "Bruce Wayne")
-        self.assertEqual(facts['location'], "Gotham")
+    @patch('google.generativeai.ChatSession.send_message')
+    def test_process_user_message_unified(self, mock_send):
+        mock_send.return_value.text = '{"intent": "GREETING", "response": "Hello Master Wayne", "facts": {}, "event": {}}'
+        result = self.brain.process_user_message("Instruction", "Hello Vecta", "Context")
+        self.assertEqual(result['intent'], "GREETING")
+        self.assertEqual(result['response'], "Hello Master Wayne")
 
 if __name__ == '__main__':
     unittest.main()
