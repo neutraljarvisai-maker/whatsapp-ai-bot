@@ -13,137 +13,120 @@ else:
     logger.warning("GEMINI_API_KEY not set. Gemini functionality will be unavailable.")
 
 class JarvisBrain:
-    def __init__(self, model_name: str = "gemini-2.0-flash"):
+    def __init__(self, model_name: str = "gemini-2.0-flash-exp"):
         self.model_name = model_name
         self.model = genai.GenerativeModel(
             model_name=model_name,
             generation_config={
-                "temperature": 0.2, # Lower temperature for less hallucination
+                "temperature": 0.1, # Even lower for precision
                 "top_p": 0.95,
                 "top_k": 64,
-                "max_output_tokens": 1024,
+                "max_output_tokens": 2048,
             }
         )
 
-    def generate_response(self, system_instruction: str, user_prompt: str, history: List[Dict[str, str]] = None) -> str:
-        """Generates a text response using Gemini 1.5 Flash."""
-        try:
-            # Gemini 1.5 Flash supports system_instruction directly in the constructor or via a specific method
-            # For simplicity with start_chat, we can prepend it to the first message if history is empty
-            # or use the system_instruction parameter in the GenerativeModel constructor if supported by the library version
+    def process_user_message(self, system_instruction: str, user_message: str, context: str, history: List[Dict[str, str]] = None) -> Dict[str, Any]:
+        """Unified single-call architecture for VECTA processing."""
+        full_system_prompt = f"""{system_instruction}
 
-            model_with_sys = genai.GenerativeModel(
-                model_name=self.model_name,
-                system_instruction=system_instruction
-            )
+TASK:
+Analyze the user's message and current context. Perform intent classification, response generation, and data extraction in one step.
 
-            chat = model_with_sys.start_chat(history=history or [])
-            response = chat.send_message(user_prompt)
-            return response.text.strip()
-        except Exception as e:
-            logger.error(f"Error generating response from Gemini: {e}")
-            return "I'm sorry, I encountered an error in my thinking module."
-
-    def classify_intent(self, user_message: str, context: str) -> str:
-        """Classifies user intent using Gemini for higher accuracy."""
-        prompt = f"""Analyze the user's input and categorize their primary intent.
-Respond ONLY with a single, uppercase label.
-
-Available Intents:
+AVAILABLE INTENTS:
 - GREETING: Informal greetings.
 - QUESTION: Factual info, explanations.
 - ADD_EVENT: Create/schedule an event.
 - CANCEL_EVENT: Delete/cancel an event.
-- RECALL: Asking about existing schedule or saved profile data.
-- TASK: A request to perform an action on the computer (e.g., "open chrome", "search for X", "type this", "tell me what's on the screen", "click the blue button"). If it requires seeing the screen or moving the mouse, it's a TASK.
-- CHAT: General conversation, small talk.
+- RECALL: Asking about schedule or profile data.
+- TASK: System control request (e.g., "open chrome", "click X").
+- CHAT: General conversation.
 
-Context:
+EXTRACTION RULES:
+- "facts": Extract explicit user profile facts (e.g., "my name is Bruce").
+- "event": If ADD_EVENT, extract {{"title": "...", "datetime": "..."}}.
+
+OUTPUT FORMAT:
+Respond ONLY with a valid JSON object. No other text.
+{{
+  "intent": "GREETING | QUESTION | ADD_EVENT | CANCEL_EVENT | RECALL | TASK | CHAT",
+  "response": "Your spoken/text response as VECTA",
+  "facts": {{}},
+  "event": {{}}
+}}
+
+CONTEXT:
 {context}
-
-User Message:
-{user_message}
-
-Label:"""
+"""
         try:
-            response = self.model.generate_content(prompt)
-            return response.text.strip().upper()
-        except Exception as e:
-            logger.error(f"Error classifying intent: {e}")
-            return "CHAT"
+            model_with_sys = genai.GenerativeModel(
+                model_name=self.model_name,
+                system_instruction=full_system_prompt
+            )
 
-    def extract_facts(self, user_message: str, jarvis_reply: str, current_profile: str, available_fields: List[str]) -> Optional[Dict[str, str]]:
-        """Extracts explicit facts from the conversation to update the profile."""
-        prompt = f"""Extract EXPLICIT facts about the user from this interaction.
-Available fields: {", ".join(available_fields)}
+            chat = model_with_sys.start_chat(history=history or [])
+            response = chat.send_message(user_message)
 
-Current Profile Context:
-{current_profile}
-
-Interaction:
-User: {user_message}
-Jarvis: {jarvis_reply}
-
-Rules:
-1. ONLY extract explicit facts stated by the user.
-2. Respond with a JSON object of field:value pairs.
-3. If no new facts, respond with "{{}}".
-4. Never guess or infer.
-
-JSON Output:"""
-        try:
-            response = self.model.generate_content(prompt)
-            # Find the JSON part in case there's extra text
+            # JSON Parsing with Fallback
             text = response.text.strip()
-            if "{" in text and "}" in text:
-                json_str = text[text.find("{"):text.rfind("}")+1]
+            try:
                 import json
-                return json.loads(json_str)
-            return None
-        except Exception as e:
-            logger.error(f"Error extracting facts: {e}")
-            return None
+                # Find JSON block
+                if "{" in text and "}" in text:
+                    json_str = text[text.find("{"):text.rfind("}")+1]
+                    return json.loads(json_str)
+                else:
+                    raise ValueError("No JSON found in response")
+            except Exception as json_err:
+                logger.error(f"JSON parsing failed: {json_err}. Raw text: {text}")
+                return {
+                    "intent": "CHAT",
+                    "response": text if len(text) > 10 else "I'm processing your request.",
+                    "facts": {},
+                    "event": {}
+                }
 
-    def extract_event_details(self, user_message: str, context: str) -> Optional[Dict[str, str]]:
-        """Extracts event details (title and datetime) from a message."""
-        prompt = f"""Extract event details for a calendar entry.
-Context: {context}
-Message: {user_message}
-
-Respond with JSON: {{"title": "...", "datetime": "..."}}
-If not an event, respond with {{}}.
-JSON Output:"""
-        try:
-            response = self.model.generate_content(prompt)
-            text = response.text.strip()
-            if "{" in text and "}" in text:
-                import json
-                return json.loads(text[text.find("{"):text.rfind("}")+1])
-            return None
         except Exception as e:
-            logger.error(f"Error extracting event details: {e}")
-            return None
+            logger.error(f"Error in unified VECTA processing: {e}")
+            return {
+                "intent": "CHAT",
+                "response": "I encountered a disturbance in my core logic. Please try again.",
+                "facts": {},
+                "event": {}
+            }
 
     def analyze_screen_and_plan(self, screenshot_path: str, task: str, history: List[str]) -> str:
         """Vision-based task planning for desktop control."""
         try:
+            # For Gemini 2.0 Flash / Pro, we want to provide the previous history and the current state
             sample_file = genai.upload_file(path=screenshot_path)
 
-            prompt = f"""You are Bat-Jarvis. You have control over a Windows 11 PC.
-Current Task: {task}
-Previous Actions: {", ".join(history) if history else "None"}
+            prompt = f"""You are VECTA, a superior autonomous AI entity. You are controlling a Windows 11 PC to complete this objective: '{task}'.
 
-Look at the screenshot and decide the NEXT action.
-Available Actions:
-- CLICK(x, y): Click at coordinates.
-- TYPE("text"): Type text.
-- PRESS("key"): Press a specific key (e.g., 'enter', 'tab', 'esc').
-- SCROLL(amount): Scroll up (+) or down (-).
-- WAIT(seconds): Wait for a bit.
-- DONE: Task is complete.
-- FAIL("reason"): Task cannot be completed.
+HISTORY OF ACTIONS TAKEN:
+{chr(10).join(history) if history else "No actions taken yet."}
 
-Respond ONLY with the action. Be precise with coordinates.
+YOUR CAPABILITIES:
+- CLICK(x, y): Left click at specific screen coordinates.
+- DOUBLE_CLICK(x, y): Double click at coordinates.
+- RIGHT_CLICK(x, y): Right click at coordinates.
+- TYPE("text"): Type the specified string.
+- PRESS("key"): Press a system key (e.g., 'enter', 'win', 'alt', 'tab').
+- DRAG(x1, y1, x2, y2): Drag from start to end.
+- WAIT(seconds): Wait for UI to load.
+- DONE: Task is successfully completed.
+- FAIL("reason"): Impossible to complete.
+
+STRATEGY:
+1. Analyze the current screen state from the image.
+2. Compare it to the history and the objective.
+3. Determine the NEXT logical step.
+4. If you see the result of the task, output DONE.
+5. Be extremely precise with coordinates.
+
+OUTPUT FORMAT:
+Respond ONLY with the exact function call. No explanation.
+Example: CLICK(500, 300)
+
 Action:"""
 
             response = self.model.generate_content([prompt, sample_file])

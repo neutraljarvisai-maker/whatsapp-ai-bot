@@ -2,10 +2,10 @@ import os
 import logging
 from flask import Flask, request, jsonify
 from core.brain import brain
-from core.profile_util import load_profile, format_profile_for_llm
+from services.profile_util import load_profile, format_profile_for_llm
 from core.personality import PERSONALITY, PROFILE_COLUMNS
-from core.database import run_query
-from core.calendar_util import get_calendar_service, get_events_for_query, create_and_verify_event, cancel_event
+from services.database import run_query
+from services.calendar_util import get_calendar_service, get_events_for_query, create_and_verify_event, cancel_event
 from twilio.twiml.messaging_response import MessagingResponse
 import uuid
 
@@ -23,7 +23,7 @@ def health():
 
 @app.route("/chat", methods=["POST"])
 def chat():
-    """General chat endpoint for the desktop client."""
+    """General chat endpoint for the desktop client using single-call architecture."""
     data = request.json
     uid = data.get("user_id")
     message = data.get("message")
@@ -34,27 +34,38 @@ def chat():
     profile = load_profile(uid)
     profile_text = format_profile_for_llm(profile)
 
-    # Simple history retrieval (can be expanded)
+    # History retrieval
     history_rows = run_query("SELECT recent_chat FROM conversations WHERE user_id=%s", (uid,), fetch=True)
     history_text = history_rows[0][0] if history_rows else ""
 
-    # First, classify intent to see if it's a TASK
-    intent = brain.classify_intent(message, history_text)
+    # Unified Processing
+    context = f"Profile Context:\n{profile_text}\n\nRecent History:\n{history_text}"
+    result = brain.process_user_message(PERSONALITY, message, context)
 
+    intent = result.get("intent", "CHAT")
+    response = result.get("response", "Processing...")
+
+    # Handle Task Intent immediately for client
     if intent == "TASK":
         return jsonify({
-            "response": "Understood. I'm taking control now.",
+            "response": response,
             "intent": "TASK",
             "task": message
         })
 
-    response = brain.generate_response(
-        system_instruction=PERSONALITY,
-        user_prompt=f"Profile Context:\n{profile_text}\n\nRecent History:\n{history_text}\n\nUser Message: {message}"
-    )
+    # Handle Facts and Events in background
+    facts = result.get("facts", {})
+    if facts:
+        for field, value in facts.items():
+            if field in PROFILE_COLUMNS:
+                run_query(f"UPDATE profile SET {field} = %s WHERE user_id = %s", (value, uid))
+
+    event = result.get("event", {})
+    if intent == "ADD_EVENT" and event:
+        create_and_verify_event(event.get("title", "Event"), event.get("datetime", ""))
 
     # Update history
-    new_entry = f"User: {message}\nJarvis: {response}"
+    new_entry = f"User: {message}\nVECTA: {response}"
     run_query("""
         INSERT INTO conversations (user_id, recent_chat)
         VALUES (%s, %s)
@@ -62,7 +73,10 @@ def chat():
         DO UPDATE SET recent_chat = conversations.recent_chat || '\n' || %s;
     """, (uid, new_entry, new_entry))
 
-    return jsonify({"response": response})
+    return jsonify({
+        "response": response,
+        "intent": intent
+    })
 
 @app.route("/plan_action", methods=["POST"])
 def plan_action():
@@ -91,7 +105,7 @@ def plan_action():
 
 @app.route("/whatsapp", methods=["POST"])
 def whatsapp_webhook():
-    """Handles incoming WhatsApp messages."""
+    """Handles incoming WhatsApp messages using single-call architecture."""
     try:
         form_data = request.form
         uid = form_data.get("From")
@@ -103,37 +117,41 @@ def whatsapp_webhook():
 
         # Load context
         profile = load_profile(uid)
-        profile_name = profile.get("name", "user")
+        profile_text = format_profile_for_llm(profile)
 
-        # Simple history retrieval
+        # History retrieval
         history_rows = run_query("SELECT recent_chat FROM conversations WHERE user_id=%s", (uid,), fetch=True)
-        recent_chat = history_rows[0][0] if history_rows else ""
+        history_text = history_rows[0][0] if history_rows else ""
 
-        # Intent Classification
-        intent = brain.classify_intent(incoming_msg, recent_chat)
-        logger.info(f"Intent: {intent}")
+        # Unified Processing
+        context = f"Profile Context:\n{profile_text}\n\nRecent History:\n{history_text}"
+        result = brain.process_user_message(PERSONALITY, incoming_msg, context)
 
-        response_text = ""
-        if intent == "ADD_EVENT":
-            details = brain.extract_event_details(incoming_msg, recent_chat)
-            if details and details.get("title") and details.get("datetime"):
-                response_text = create_and_verify_event(details["title"], details["datetime"])
-            else:
-                response_text = "I couldn't quite catch the details for that event. Could you specify the title and time?"
-        elif intent == "CANCEL_EVENT":
-            response_text = cancel_event(incoming_msg, recent_chat)
-        elif intent == "RECALL":
+        intent = result.get("intent", "CHAT")
+        response_text = result.get("response", "I'm listening.")
+
+        # Handle Calendar Recall specifically for text response
+        if intent == "RECALL":
             events, label = get_events_for_query(incoming_msg)
             events_text = "\n".join(events) if events else f"No events found for {label}."
-            response_text = brain.generate_response(
-                system_instruction=PERSONALITY,
-                user_prompt=f"Recall Request: {incoming_msg}\nEvents for {label}:\n{events_text}\n\nRespond to the user about their schedule."
-            )
-        else:
-            response_text = brain.generate_response(PERSONALITY, f"Profile: {profile}\nHistory: {recent_chat}\nUser: {incoming_msg}")
+            # We already have a response from Gemini, but for recall we might want to enrich it
+            # To stay within 1 call, Gemini should ideally have been told about the calendar.
+            # For now, let's append events if it was a recall.
+            if events: response_text += f"\n\nSchedule for {label}:\n{events_text}"
+
+        # Handle Facts and Events
+        facts = result.get("facts", {})
+        if facts:
+            for field, value in facts.items():
+                if field in PROFILE_COLUMNS:
+                    run_query(f"UPDATE profile SET {field} = %s WHERE user_id = %s", (value, uid))
+
+        event = result.get("event", {})
+        if intent == "ADD_EVENT" and event:
+            response_text = create_and_verify_event(event.get("title", "Event"), event.get("datetime", ""))
 
         # Update history
-        new_entry = f"User: {incoming_msg}\nJarvis: {response_text}"
+        new_entry = f"User: {incoming_msg}\nVECTA: {response_text}"
         run_query("""
             INSERT INTO conversations (user_id, recent_chat)
             VALUES (%s, %s)
@@ -149,24 +167,24 @@ def whatsapp_webhook():
         logger.error(f"WhatsApp error: {e}")
         return "Error"
 
-@app.route("/update_profile", methods=["POST"])
-def update_profile():
-    """Endpoint to trigger fact extraction and profile update."""
+@app.route("/update_profile_manual", methods=["POST"])
+def update_profile_manual():
+    """Endpoint to manually trigger a profile fact update from text."""
     data = request.json
     uid = data.get("user_id")
     message = data.get("message")
-    reply = data.get("reply")
 
-    if not uid or not message or not reply:
+    if not uid or not message:
         return jsonify({"error": "Missing parameters"}), 400
 
     profile = load_profile(uid)
     profile_text = format_profile_for_llm(profile)
 
-    facts = brain.extract_facts(message, reply, profile_text, PROFILE_COLUMNS)
+    # Use unified method for extraction
+    result = brain.process_user_message("Extract profile facts from the message.", message, profile_text)
+    facts = result.get("facts", {})
 
     if facts:
-        # Update DB logic
         for field, value in facts.items():
             if field in PROFILE_COLUMNS:
                 run_query(f"UPDATE profile SET {field} = %s WHERE user_id = %s", (value, uid))

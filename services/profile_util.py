@@ -1,4 +1,4 @@
-from core.database import run_query
+from services.database import run_query
 from core.personality import PROFILE_COLUMNS
 import logging
 
