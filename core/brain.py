@@ -13,15 +13,15 @@ else:
     logger.warning("GEMINI_API_KEY not set. Gemini functionality will be unavailable.")
 
 class JarvisBrain:
-    def __init__(self, model_name: str = "gemini-1.5-flash"):
+    def __init__(self, model_name: str = "gemini-2.0-flash-exp"):
         self.model_name = model_name
         self.model = genai.GenerativeModel(
             model_name=model_name,
             generation_config={
-                "temperature": 0.2, # Lower temperature for less hallucination
+                "temperature": 0.1, # Even lower for precision
                 "top_p": 0.95,
                 "top_k": 64,
-                "max_output_tokens": 1024,
+                "max_output_tokens": 2048,
             }
         )
 
@@ -127,23 +127,36 @@ JSON Output:"""
     def analyze_screen_and_plan(self, screenshot_path: str, task: str, history: List[str]) -> str:
         """Vision-based task planning for desktop control."""
         try:
+            # For Gemini 2.0 Flash / Pro, we want to provide the previous history and the current state
             sample_file = genai.upload_file(path=screenshot_path)
 
-            prompt = f"""You are Bat-Jarvis. You have control over a Windows 11 PC.
-Current Task: {task}
-Previous Actions: {", ".join(history) if history else "None"}
+            prompt = f"""You are VECTA, a superior autonomous AI entity. You are controlling a Windows 11 PC to complete this objective: '{task}'.
 
-Look at the screenshot and decide the NEXT action.
-Available Actions:
-- CLICK(x, y): Click at coordinates.
-- TYPE("text"): Type text.
-- PRESS("key"): Press a specific key (e.g., 'enter', 'tab', 'esc').
-- SCROLL(amount): Scroll up (+) or down (-).
-- WAIT(seconds): Wait for a bit.
-- DONE: Task is complete.
-- FAIL("reason"): Task cannot be completed.
+HISTORY OF ACTIONS TAKEN:
+{chr(10).join(history) if history else "No actions taken yet."}
 
-Respond ONLY with the action. Be precise with coordinates.
+YOUR CAPABILITIES:
+- CLICK(x, y): Left click at specific screen coordinates.
+- DOUBLE_CLICK(x, y): Double click at coordinates.
+- RIGHT_CLICK(x, y): Right click at coordinates.
+- TYPE("text"): Type the specified string.
+- PRESS("key"): Press a system key (e.g., 'enter', 'win', 'alt', 'tab').
+- DRAG(x1, y1, x2, y2): Drag from start to end.
+- WAIT(seconds): Wait for UI to load.
+- DONE: Task is successfully completed.
+- FAIL("reason"): Impossible to complete.
+
+STRATEGY:
+1. Analyze the current screen state from the image.
+2. Compare it to the history and the objective.
+3. Determine the NEXT logical step.
+4. If you see the result of the task, output DONE.
+5. Be extremely precise with coordinates.
+
+OUTPUT FORMAT:
+Respond ONLY with the exact function call. No explanation.
+Example: CLICK(500, 300)
+
 Action:"""
 
             response = self.model.generate_content([prompt, sample_file])

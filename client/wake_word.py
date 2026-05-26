@@ -44,7 +44,7 @@ class WakeWordDetector:
         with sd.RawInputStream(samplerate=samplerate, blocksize=8000, device=None, dtype='int16',
                                 channels=1, callback=self.callback):
             rec = KaldiRecognizer(self.model, samplerate)
-            print("Listening for 'Hey Jarvis'...")
+            print("Listening for 'Hey Vecta'...")
 
             while True:
                 data = self.q.get()
@@ -52,7 +52,7 @@ class WakeWordDetector:
                     result = json.loads(rec.Result())
                     text = result.get("text", "")
                     print(f"Recognized: {text}")
-                    if "hey jarvis" in text or "jarvis" in text:
+                    if "hey vecta" in text or "vecta" in text:
                         print("Wake word detected!")
                         callback_on_wake()
                 else:

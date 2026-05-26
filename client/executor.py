@@ -5,6 +5,7 @@ import requests
 import base64
 from PIL import ImageGrab
 import json
+import re
 
 # Configuration
 def load_config():
@@ -32,20 +33,25 @@ class ActionExecutor:
         print(f"Executing action: {action_str}")
         try:
             if action_str.startswith("CLICK"):
-                coords = action_str.replace("CLICK(", "").replace(")", "").split(",")
-                x, y = int(coords[0]), int(coords[1])
-                pyautogui.click(x, y)
+                coords = re.findall(r'\d+', action_str)
+                pyautogui.click(int(coords[0]), int(coords[1]))
+            elif action_str.startswith("DOUBLE_CLICK"):
+                coords = re.findall(r'\d+', action_str)
+                pyautogui.doubleClick(int(coords[0]), int(coords[1]))
+            elif action_str.startswith("RIGHT_CLICK"):
+                coords = re.findall(r'\d+', action_str)
+                pyautogui.rightClick(int(coords[0]), int(coords[1]))
             elif action_str.startswith("TYPE"):
-                text = action_str.replace("TYPE('", "").replace("TYPE(\"", "").replace("')", "").replace("\")", "")
+                text = re.search(r'["\'](.*?)["\']', action_str).group(1)
                 pyautogui.write(text)
             elif action_str.startswith("PRESS"):
-                key = action_str.replace("PRESS('", "").replace("PRESS(\"", "").replace("')", "").replace("\")", "")
+                key = re.search(r'["\'](.*?)["\']', action_str).group(1)
                 pyautogui.press(key)
-            elif action_str.startswith("SCROLL"):
-                amount = int(action_str.replace("SCROLL(", "").replace(")", ""))
-                pyautogui.scroll(amount)
+            elif action_str.startswith("DRAG"):
+                coords = re.findall(r'\d+', action_str)
+                pyautogui.dragTo(int(coords[2]), int(coords[3]), duration=1.0)
             elif action_str.startswith("WAIT"):
-                seconds = int(action_str.replace("WAIT(", "").replace(")", ""))
+                seconds = int(re.findall(r'\d+', action_str)[0])
                 time.sleep(seconds)
             return True
         except Exception as e:

@@ -3,25 +3,46 @@
 <head>
     <style>
         body {
-            background: rgba(10, 10, 15, 0.85);
+            background: #050505;
             color: #00d4ff;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            border-radius: 15px;
-            border: 2px solid #005577;
+            font-family: 'Courier New', Courier, monospace;
             overflow: hidden;
             margin: 0;
             display: flex;
             flex-direction: column;
             height: 100vh;
+            border: 1px solid #005577;
+            box-shadow: inset 0 0 100px rgba(0, 212, 255, 0.1);
+        }
+        .hud-grid {
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background-image:
+                linear-gradient(rgba(0, 85, 119, 0.1) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(0, 85, 119, 0.1) 1px, transparent 1px);
+            background-size: 50px 50px;
+            pointer-events: none;
+            z-index: -1;
+        }
+        .scanlines {
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.1) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.02), rgba(0, 255, 0, 0.01), rgba(0, 0, 255, 0.02));
+            background-size: 100% 4px, 3px 100%;
+            pointer-events: none;
+            z-index: 100;
         }
         .header {
-            padding: 10px;
-            text-align: center;
-            background: rgba(0, 85, 119, 0.3);
+            padding: 15px;
+            text-align: left;
+            background: rgba(0, 85, 119, 0.1);
+            border-bottom: 1px solid #005577;
             -webkit-app-region: drag;
             font-weight: bold;
-            font-size: 0.8em;
-            letter-spacing: 2px;
+            font-size: 0.9em;
+            letter-spacing: 4px;
+            display: flex;
+            justify-content: space-between;
         }
         .sphere-container {
             flex-grow: 1;
@@ -72,9 +93,14 @@
     </style>
 </head>
 <body>
-    <div class="header">BAT-JARVIS SYSTEM v1.0</div>
+    <div class="hud-grid"></div>
+    <div class="scanlines"></div>
+    <div class="header">
+        <span>VECTA OS v2.0 // HOLOGRAPHIC INTERFACE</span>
+        <span id="clock">00:00:00</span>
+    </div>
     <div class="sphere-container">
-        <div class="sphere"></div>
+        <div id="canvas-container"></div>
     </div>
     <div id="status" class="status">SYSTEM IDLE</div>
     <div class="chat-container" id="chat">
@@ -85,8 +111,14 @@
     </div>
 
     <script>
+        // Clock
+        setInterval(() => {
+            document.getElementById('clock').innerText = new Date().toLocaleTimeString();
+        }, 1000);
+
         const axios = require('axios');
         const { ipcRenderer } = require('electron');
+        const VectaCore = require('./vecta_core.js');
         const fs = require('fs');
         const path = require('path');
 
@@ -103,6 +135,7 @@
         const input = document.getElementById('userInput');
         const chat = document.getElementById('chat');
         const status = document.getElementById('status');
+        const core = new VectaCore('canvas-container');
 
         input.addEventListener('keypress', async (e) => {
             if (e.key === 'Enter') {
@@ -111,12 +144,15 @@
                 addMessage('You', text);
 
                 status.innerText = 'PROCESSING...';
+                core.setState('THINKING');
                 try {
                     const response = await axios.post(`${config.JARVIS_BACKEND_URL}/chat`, {
                         user_id: config.JARVIS_USER_ID,
                         message: text
                     });
-                    addMessage('Jarvis', response.data.response);
+                    addMessage('VECTA', response.data.response);
+                    core.setState('SPEAKING');
+                    setTimeout(() => core.setState('IDLE'), 3000);
 
                     if (response.data.intent === 'TASK') {
                         status.innerText = 'EXECUTING TASK...';
@@ -124,6 +160,7 @@
                     }
                 } catch (err) {
                     addMessage('System', 'Connection to brain lost.');
+                    core.setState('IDLE');
                 }
                 status.innerText = 'SYSTEM IDLE';
             }
@@ -131,6 +168,8 @@
 
         ipcRenderer.on('task-status', (event, msg) => {
             status.innerText = msg.toUpperCase();
+            if (msg.includes('LISTENING')) core.setState('LISTENING');
+            else if (msg.includes('CLICK') || msg.includes('TYPE')) core.setState('THINKING');
         });
 
         ipcRenderer.on('task-finished', (event, msg) => {

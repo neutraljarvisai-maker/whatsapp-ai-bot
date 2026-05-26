@@ -2,10 +2,10 @@ import os
 import logging
 from flask import Flask, request, jsonify
 from core.brain import brain
-from core.profile_util import load_profile, format_profile_for_llm
+from services.profile_util import load_profile, format_profile_for_llm
 from core.personality import PERSONALITY, PROFILE_COLUMNS
-from core.database import run_query
-from core.calendar_util import get_calendar_service, get_events_for_query, create_and_verify_event, cancel_event
+from services.database import run_query
+from services.calendar_util import get_calendar_service, get_events_for_query, create_and_verify_event, cancel_event
 from twilio.twiml.messaging_response import MessagingResponse
 import uuid
 
