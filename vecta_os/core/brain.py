@@ -1,35 +1,28 @@
-import os
 import google.generativeai as genai
 from typing import List, Dict, Any, Optional
+import json
 import logging
-from core.skills import registry as skill_registry
-from core.mcp.hub import mcp_hub
+from vecta_os.core.config import config
+from vecta_os.core.registry import registry as skill_registry
+from vecta_os.mcp.hub import mcp_hub
 
 logger = logging.getLogger(__name__)
 
-# Configure Gemini
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-else:
-    logger.warning("GEMINI_API_KEY not set. Gemini functionality will be unavailable.")
+if config.GEMINI_API_KEY:
+    genai.configure(api_key=config.GEMINI_API_KEY)
 
-class JarvisBrain:
-    def __init__(self, model_name: str = "gemini-2.0-flash-exp"):
+class BrainService:
+    """Core reasoning engine for VECTA CLOUD OS."""
+    def __init__(self, model_name: str = config.DEFAULT_MODEL):
         self.model_name = model_name
         self.model = genai.GenerativeModel(
             model_name=model_name,
-            generation_config={
-                "temperature": 0.1, # Even lower for precision
-                "top_p": 0.95,
-                "top_k": 64,
-                "max_output_tokens": 2048,
-            }
+            generation_config={"temperature": 0.1, "max_output_tokens": 4096}
         )
 
-    def process_user_message(self, system_instruction: str, user_message: str, context: str, history: List[Dict[str, str]] = None) -> Dict[str, Any]:
-        """Unified single-call architecture for VECTA processing."""
-        skills_desc = skill_registry.get_skill_descriptions()
+    def ask(self, system_instruction: str, user_input: str, history: List[Dict] = None) -> Dict[str, Any]:
+        """Unified structured request for all VECTA interactions."""
+        skills_desc = skill_registry.list_specs()
         mcp_tools = mcp_hub.list_tools()
         mcp_desc = "\n".join([f"- {t['name']}: {t['description']}" for t in mcp_tools])
 
@@ -67,46 +60,24 @@ Respond ONLY with a valid JSON object. No other text.
   "facts": {{}},
   "event": {{}}
 }}
-
-CONTEXT:
-{context}
 """
+        model_with_sys = genai.GenerativeModel(
+            model_name=self.model_name,
+            system_instruction=full_system_prompt
+        )
         try:
-            model_with_sys = genai.GenerativeModel(
-                model_name=self.model_name,
-                system_instruction=full_system_prompt
-            )
-
             chat = model_with_sys.start_chat(history=history or [])
-            response = chat.send_message(user_message)
-
-            # JSON Parsing with Fallback
+            response = chat.send_message(user_input)
             text = response.text.strip()
-            try:
-                import json
-                # Find JSON block
-                if "{" in text and "}" in text:
-                    json_str = text[text.find("{"):text.rfind("}")+1]
-                    return json.loads(json_str)
-                else:
-                    raise ValueError("No JSON found in response")
-            except Exception as json_err:
-                logger.error(f"JSON parsing failed: {json_err}. Raw text: {text}")
-                return {
-                    "intent": "CHAT",
-                    "response": text if len(text) > 10 else "I'm processing your request.",
-                    "facts": {},
-                    "event": {}
-                }
 
+            # JSON extraction logic
+            if "{" in text and "}" in text:
+                json_str = text[text.find("{"):text.rfind("}")+1]
+                return json.loads(json_str)
+            return {"response": text, "intent": "CHAT"}
         except Exception as e:
-            logger.error(f"Error in unified VECTA processing: {e}")
-            return {
-                "intent": "CHAT",
-                "response": "I encountered a disturbance in my core logic. Please try again.",
-                "facts": {},
-                "event": {}
-            }
+            logger.error(f"Brain execution error: {e}")
+            return {"error": str(e), "response": "I encountered a core logic disturbance."}
 
     def analyze_screen_and_plan(self, screenshot_path: str, task: str, history: List[str]) -> Dict[str, Any]:
         """Vision-based ReAct planning loop for desktop control."""
@@ -151,7 +122,6 @@ Action:"""
             return {"thought": "Parsing error", "action": "FAIL('JSON parsing error')"}
         except Exception as e:
             logger.error(f"Error in vision task planning: {e}")
-            return "FAIL('Vision system error')"
+            return {"thought": "Vision error", "action": "FAIL('Vision system error')"}
 
-# Singleton instance
-brain = JarvisBrain()
+brain = BrainService()

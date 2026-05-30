@@ -1,5 +1,5 @@
-from services.database import run_query
-from core.personality import PROFILE_COLUMNS
+from vecta_os.services.database import db
+from vecta_os.personality.base import PROFILE_COLUMNS
 import logging
 
 logger = logging.getLogger(__name__)
@@ -7,7 +7,7 @@ logger = logging.getLogger(__name__)
 def load_profile(uid):
     try:
         query = f"SELECT {', '.join(PROFILE_COLUMNS)} FROM profile WHERE user_id=%s;"
-        r = run_query(query, (uid,), fetch=True)
+        r = db.run_query(query, (uid,), fetch=True)
         if not r: return {}
         profile_data = {}
         for i, col_name in enumerate(PROFILE_COLUMNS):

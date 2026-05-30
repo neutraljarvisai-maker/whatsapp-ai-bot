@@ -146,7 +146,7 @@
                 status.innerText = 'PROCESSING...';
                 core.setState('THINKING');
                 try {
-                    const response = await axios.post(`${config.JARVIS_BACKEND_URL}/chat`, {
+                    const response = await axios.post(`${config.JARVIS_BACKEND_URL}/api/v1/chat`, {
                         user_id: config.JARVIS_USER_ID,
                         message: text
                     });

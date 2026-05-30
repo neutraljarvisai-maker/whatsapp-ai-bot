@@ -71,7 +71,7 @@ class ActionExecutor:
                     'user_id': USER_ID,
                     'history': "|".join(history[-5:]) # Last 5 actions
                 }
-                response = requests.post(f"{BACKEND_URL}/plan_action", files=files, data=data)
+                response = requests.post(f"{BACKEND_URL}/api/v1/plan_action", files=files, data=data)
 
             if response.status_code != 200:
                 print("Backend error planning action.")
