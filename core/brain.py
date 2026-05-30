@@ -2,6 +2,8 @@ import os
 import google.generativeai as genai
 from typing import List, Dict, Any, Optional
 import logging
+from core.skills import registry as skill_registry
+from core.mcp.hub import mcp_hub
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +29,17 @@ class JarvisBrain:
 
     def process_user_message(self, system_instruction: str, user_message: str, context: str, history: List[Dict[str, str]] = None) -> Dict[str, Any]:
         """Unified single-call architecture for VECTA processing."""
+        skills_desc = skill_registry.get_skill_descriptions()
+        mcp_tools = mcp_hub.list_tools()
+        mcp_desc = "\n".join([f"- {t['name']}: {t['description']}" for t in mcp_tools])
+
         full_system_prompt = f"""{system_instruction}
+
+AVAILABLE SKILLS (Local Python functions):
+{skills_desc}
+
+MCP TOOLS (External Data Connections):
+{mcp_desc}
 
 TASK:
 Analyze the user's message and current context. Perform intent classification, response generation, and data extraction in one step.
@@ -49,7 +61,9 @@ OUTPUT FORMAT:
 Respond ONLY with a valid JSON object. No other text.
 {{
   "intent": "GREETING | QUESTION | ADD_EVENT | CANCEL_EVENT | RECALL | TASK | CHAT",
-  "response": "Your spoken/text response as VECTA",
+  "thought": "Your internal reasoning process as VECTA",
+  "response": "Your spoken/text response to the user",
+  "action": "OPTIONAL: CLICK(x, y) | TYPE('text') | PRESS('key') | DRAG(x1, y1, x2, y2) | WAIT(sec) | DONE | FAIL('reason')",
   "facts": {{}},
   "event": {{}}
 }}
@@ -94,43 +108,47 @@ CONTEXT:
                 "event": {}
             }
 
-    def analyze_screen_and_plan(self, screenshot_path: str, task: str, history: List[str]) -> str:
-        """Vision-based task planning for desktop control."""
+    def analyze_screen_and_plan(self, screenshot_path: str, task: str, history: List[str]) -> Dict[str, Any]:
+        """Vision-based ReAct planning loop for desktop control."""
         try:
-            # For Gemini 2.0 Flash / Pro, we want to provide the previous history and the current state
             sample_file = genai.upload_file(path=screenshot_path)
 
-            prompt = f"""You are VECTA, a superior autonomous AI entity. You are controlling a Windows 11 PC to complete this objective: '{task}'.
+            prompt = f"""You are VECTA, a superior autonomous AI entity. You are performing a ReAct loop to complete this objective: '{task}'.
 
-HISTORY OF ACTIONS TAKEN:
-{chr(10).join(history) if history else "No actions taken yet."}
+HISTORY OF ACTIONS:
+{chr(10).join(history) if history else "Initial state."}
 
-YOUR CAPABILITIES:
-- CLICK(x, y): Left click at specific screen coordinates.
-- DOUBLE_CLICK(x, y): Double click at coordinates.
-- RIGHT_CLICK(x, y): Right click at coordinates.
-- TYPE("text"): Type the specified string.
-- PRESS("key"): Press a system key (e.g., 'enter', 'win', 'alt', 'tab').
-- DRAG(x1, y1, x2, y2): Drag from start to end.
-- WAIT(seconds): Wait for UI to load.
-- DONE: Task is successfully completed.
-- FAIL("reason"): Impossible to complete.
+CAPABILITIES:
+- CLICK(x, y)
+- DOUBLE_CLICK(x, y)
+- RIGHT_CLICK(x, y)
+- TYPE("text")
+- PRESS("key")
+- DRAG(x1, y1, x2, y2)
+- WAIT(seconds)
+- DONE
+- FAIL("reason")
 
-STRATEGY:
-1. Analyze the current screen state from the image.
-2. Compare it to the history and the objective.
-3. Determine the NEXT logical step.
-4. If you see the result of the task, output DONE.
-5. Be extremely precise with coordinates.
+INSTRUCTIONS:
+1. Observe the current screen state.
+2. Formulate a 'thought' about what to do next based on your observation and history.
+3. Choose an 'action' from the list above.
+4. Output your response as JSON.
 
 OUTPUT FORMAT:
-Respond ONLY with the exact function call. No explanation.
-Example: CLICK(500, 300)
+{{
+  "thought": "Your reasoning here",
+  "action": "ACTION_CALL"
+}}
 
 Action:"""
 
             response = self.model.generate_content([prompt, sample_file])
-            return response.text.strip()
+            text = response.text.strip()
+            import json
+            if "{" in text and "}" in text:
+                return json.loads(text[text.find("{"):text.rfind("}")+1])
+            return {"thought": "Parsing error", "action": "FAIL('JSON parsing error')"}
         except Exception as e:
             logger.error(f"Error in vision task planning: {e}")
             return "FAIL('Vision system error')"

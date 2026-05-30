@@ -6,6 +6,8 @@ from services.profile_util import load_profile, format_profile_for_llm
 from core.personality import PERSONALITY, PROFILE_COLUMNS
 from services.database import run_query
 from services.calendar_util import get_calendar_service, get_events_for_query, create_and_verify_event, cancel_event
+from core.scheduler.scheduler import scheduler
+from core.memory.manager import memory
 from twilio.twiml.messaging_response import MessagingResponse
 import uuid
 
@@ -34,9 +36,11 @@ def chat():
     profile = load_profile(uid)
     profile_text = format_profile_for_llm(profile)
 
-    # History retrieval
+    # History retrieval with compression
     history_rows = run_query("SELECT recent_chat FROM conversations WHERE user_id=%s", (uid,), fetch=True)
-    history_text = history_rows[0][0] if history_rows else ""
+    history_raw = history_rows[0][0] if history_rows else ""
+    history_lines = history_raw.split("\n")
+    history_text = memory.compress_history(history_lines)
 
     # Unified Processing
     context = f"Profile Context:\n{profile_text}\n\nRecent History:\n{history_text}"
@@ -193,5 +197,6 @@ def update_profile_manual():
     return jsonify({"status": "no_new_facts"})
 
 if __name__ == "__main__":
+    scheduler.start()
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)

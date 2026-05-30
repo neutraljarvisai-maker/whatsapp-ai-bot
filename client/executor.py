@@ -77,8 +77,12 @@ class ActionExecutor:
                 print("Backend error planning action.")
                 break
 
-            action = response.json().get("action", "DONE")
-            print(f"Jarvis planned: {action}")
+            result = response.json().get("action", {})
+            thought = result.get("thought", "Analyzing...")
+            action = result.get("action", "DONE")
+
+            print(f"VECTA THOUGHT: {thought}")
+            print(f"VECTA ACTION: {action}")
 
             if action == "DONE" or action.startswith("FAIL"):
                 print(f"Task finished: {action}")
