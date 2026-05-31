@@ -1,7 +1,8 @@
 import os
+import json
+import logging
 import google.generativeai as genai
 from typing import List, Dict, Any, Optional
-import logging
 from core.intelligence.base import BaseIntelligence
 
 logger = logging.getLogger(__name__)
@@ -55,14 +56,13 @@ CONTEXT:
             response = chat.send_message(user_message)
             text = response.text.strip()
 
-            import json
             if "{" in text and "}" in text:
                 json_str = text[text.find("{"):text.rfind("}")+1]
                 return json.loads(json_str)
-            return {{"intent": "CHAT", "response": text, "facts": {{}}, "event": {{}}}}
+            return {"intent": "CHAT", "response": text, "facts": {}, "event": {}}
         except Exception as e:
             logger.error(f"Gemini error: {e}")
-            return {{"intent": "CHAT", "response": "Intelligence failure.", "facts": {{}}, "event": {{}}}}
+            return {"intent": "CHAT", "response": "Intelligence failure.", "facts": {}, "event": {}}
 
     def analyze_screen_and_plan(self, screenshot_path: str, task: str, history: List[str]) -> str:
         try:
