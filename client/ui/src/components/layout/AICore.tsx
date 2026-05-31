@@ -1,34 +1,40 @@
-import React from 'react';
-import { motion } from 'framer-motion';
+import React, { Suspense } from 'react';
+import { Canvas } from '@react-three/fiber';
+import { OrbitControls } from '@react-three/drei';
+import ParticleSphere from '../three/ParticleSphere';
+import type { AICoreState } from '../../hooks/useVectaState';
+import BatSymbol from '../ui/BatSymbol';
 
-const AICore: React.FC = () => {
+interface AICoreProps {
+  state: AICoreState;
+}
+
+const AICore: React.FC<AICoreProps> = ({ state }) => {
   return (
-    <div className="flex-1 relative flex items-center justify-center bg-vecta-bg">
+    <div className="flex-1 relative flex items-center justify-center bg-transparent overflow-hidden">
       {/* HUD Background Grid */}
-      <div className="absolute inset-0 bg-[linear-gradient(rgba(0,209,255,0.02)_1px,transparent_1px),linear-gradient(90deg,rgba(0,209,255,0.02)_1px,transparent_1px)] bg-[size:40px_40px] pointer-events-none" />
+      <div className="absolute inset-0 bg-[linear-gradient(rgba(0,209,255,0.02)_1px,transparent_1px),linear-gradient(90deg,rgba(0,209,255,0.02)_1px,transparent_1px)] bg-[size:60px_60px] pointer-events-none" />
 
-      {/* Placeholder Particle Sphere */}
-      <div className="relative w-96 h-96 border border-vecta-cyan/20 rounded-full flex items-center justify-center shadow-[0_0_50px_rgba(0,209,255,0.05)]">
-        <motion.div
-          animate={{
-            scale: [1, 1.05, 1],
-            opacity: [0.3, 0.5, 0.3]
-          }}
-          transition={{ duration: 4, repeat: Infinity, ease: "easeInOut" }}
-          className="absolute inset-10 border border-vecta-cyan/40 rounded-full"
-        />
-        <motion.div
-          animate={{
-            rotate: 360
-          }}
-          transition={{ duration: 20, repeat: Infinity, ease: "linear" }}
-          className="absolute inset-4 border-t-2 border-vecta-cyan/60 rounded-full"
-        />
-        <div className="w-4 h-4 bg-vecta-cyan rounded-full shadow-[0_0_20px_#00D1FF]" />
+      {/* Bat Symbol Background Emblem - Critical Requirement */}
+      <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-0">
+        <BatSymbol className="w-[500px] h-[500px] text-[#00D1FF] opacity-[0.03]" />
       </div>
 
-      <div className="absolute bottom-10 text-center">
-        <div className="text-[10px] tracking-[0.5em] text-vecta-cyan/40 uppercase font-bold">Neural Engine v4.0</div>
+      <div className="w-full h-full max-w-[800px] max-h-[800px] relative z-10">
+        <Canvas camera={{ position: [0, 0, 8], fov: 45 }}>
+          <color attach="background" args={['#000000']} />
+          <ambientLight intensity={0.5} />
+          <Suspense fallback={null}>
+            <ParticleSphere state={state} />
+          </Suspense>
+          <OrbitControls enableZoom={false} enablePan={false} enableRotate={false} />
+        </Canvas>
+      </div>
+
+      <div className="absolute bottom-12 text-center pointer-events-none select-none">
+        <div className="text-[10px] tracking-[0.8em] text-vecta-cyan/30 uppercase font-bold drop-shadow-[0_0_10px_rgba(0,209,255,0.2)]">
+          Neural Core v4.2 // {state.toUpperCase()}
+        </div>
       </div>
     </div>
   );

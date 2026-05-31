@@ -1,34 +1,39 @@
 import React from 'react';
-import { motion } from 'framer-motion';
+import type { AICoreState } from '../../hooks/useVectaState';
 
-const CommandConsole: React.FC = () => {
+interface CommandConsoleProps {
+  state: AICoreState;
+}
+
+const CommandConsole: React.FC<CommandConsoleProps> = ({ state }) => {
   return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      className="h-32 bg-vecta-panel backdrop-blur-xs border-t border-vecta-cyan/20 flex flex-col p-4 z-10"
-    >
-      <div className="flex-1 overflow-y-auto mb-2 space-y-2">
-        <div className="text-[11px] font-mono text-vecta-cyan bg-black/40 px-2 py-1 inline-block border-l-2 border-vecta-cyan/40">
-          <span className="opacity-50 mr-2 font-bold">&gt;</span>
-          ACCESSING ENCRYPTED DATA... [SUCCESS]
+    <div className="h-44 bg-vecta-panel/75 backdrop-blur-sm border-t border-vecta-cyan/20 flex flex-col p-6 gap-4 z-30">
+      <div className="flex-1 overflow-y-auto space-y-3 custom-scrollbar">
+        <div className="flex items-start gap-3">
+          <span className="text-vecta-cyan font-black text-[10px] mt-0.5">&gt;</span>
+          <div className="text-[11px] font-mono text-vecta-cyan/60 tracking-wider uppercase">
+            Neural Uplink Verified. Core: {state}
+          </div>
         </div>
-        <br/>
-        <div className="text-[11px] font-mono text-vecta-text-primary bg-black/40 px-2 py-1 inline-block">
-          <span className="text-vecta-cyan mr-2 font-bold underline">VECTA:</span>
-          Awaiting target coordinates or intelligence query.
+        <div className="flex items-start gap-3">
+          <span className="text-vecta-cyan font-black text-[10px] mt-0.5">VECTA:</span>
+          <div className="text-[11px] font-mono text-vecta-text-primary tracking-wide leading-relaxed bg-vecta-cyan/5 p-3 border-l border-vecta-cyan/20 rounded-r-sm max-w-3xl">
+            All tactical systems are operational. I am ready to process your next directive, Master Bruce.
+          </div>
         </div>
       </div>
 
-      <div className="flex items-center gap-4 bg-black/80 border border-vecta-cyan/20 px-4 py-2 rounded-sm group focus-within:border-vecta-cyan/60 transition-all duration-300">
-        <span className="text-xs text-vecta-cyan font-bold tracking-[0.2em] drop-shadow-[0_0_5px_rgba(0,209,255,0.3)]">COMMAND:</span>
+      <div className="relative group max-w-4xl">
+        <div className="absolute inset-y-0 left-4 flex items-center pointer-events-none">
+          <span className="text-[10px] text-vecta-cyan font-black tracking-[0.3em] drop-shadow-[0_0_5px_rgba(0,209,255,0.4)] uppercase">Execute:</span>
+        </div>
         <input
           type="text"
-          placeholder="ENTER INSTRUCTION..."
-          className="flex-1 bg-transparent border-none outline-none text-sm text-vecta-text-primary placeholder:text-vecta-cyan/30 tracking-wider font-mono uppercase"
+          placeholder="ENTER DIRECTIVE..."
+          className="w-full bg-black/40 border border-vecta-cyan/10 pl-28 pr-4 py-3 text-sm text-vecta-text-primary placeholder:text-vecta-cyan/20 tracking-[0.1em] font-mono uppercase focus:outline-none focus:border-vecta-cyan/40 transition-all duration-300 rounded-sm"
         />
       </div>
-    </motion.div>
+    </div>
   );
 };
 
