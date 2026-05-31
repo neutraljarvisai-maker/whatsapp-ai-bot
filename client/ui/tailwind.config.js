@@ -7,26 +7,27 @@ export default {
   theme: {
     extend: {
       colors: {
-        'vecta-cyan': {
-          DEFAULT: '#00d4ff',
-          glow: 'rgba(0, 212, 255, 0.5)',
-        },
-        'vecta-amber': {
-          DEFAULT: '#ffbf00',
-          warning: 'rgba(255, 191, 0, 0.5)',
-        },
-        'vecta-green': {
-          DEFAULT: '#39ff14',
-          status: 'rgba(57, 255, 20, 0.5)',
-        },
         'vecta-bg': {
-          matte: '#0a0a0a',
-          metallic: '#1a1c1e',
+          DEFAULT: '#000000',
+          alt: '#05070A',
+        },
+        'vecta-panel': {
+          DEFAULT: '#0B0F14',
+          alt: '#111827',
+        },
+        'vecta-cyan': {
+          DEFAULT: '#00D1FF',
+          accent: '#22D3EE',
+        },
+        'vecta-amber': '#F59E0B',
+        'vecta-text': {
+          primary: '#E5E7EB',
+          secondary: '#9CA3AF',
         }
       },
-      backgroundImage: {
-        'vecta-gradient': 'radial-gradient(circle, #1a1c1e 0%, #0a0a0a 100%)',
-      }
+      fontFamily: {
+        sans: ['Inter', 'system-ui', 'sans-serif'],
+      },
     },
   },
   plugins: [],
