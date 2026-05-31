@@ -76,12 +76,29 @@ Example: {{"thought": "I need to check the time.", "action": "GET_TIME()"}}
 Use 'DONE' as action when finished."""
 
     def _execute_tool(self, action_call: str) -> str:
-        """Parses and executes a tool call."""
-        # Simple parser for demonstration/validation
+        """Parses and executes a tool call with arguments."""
         try:
-            name = action_call.split('(')[0]
-            if name in self.tools:
-                return self.tools[name]()
-            return f"Error: Tool {name} not found."
+            import re
+            match = re.match(r"(\w+)\((.*)\)", action_call)
+            if not match:
+                return f"Error: Invalid action format {action_call}"
+
+            tool_name, args_str = match.groups()
+            if tool_name not in self.tools:
+                return f"Error: Tool {tool_name} not found."
+
+            # Simple argument parsing (comma-separated, stripped)
+            args = [a.strip().strip("'\"") for a in args_str.split(",") if a.strip()]
+
+            tool_func = self.tools[tool_name]
+            import inspect
+            if asyncio.iscoroutinefunction(tool_func):
+                loop = asyncio.get_event_loop()
+                return loop.run_until_complete(tool_func(*args))
+            else:
+                return tool_func(*args)
+
         except Exception as e:
             return f"Error executing tool: {e}"
+
+import asyncio

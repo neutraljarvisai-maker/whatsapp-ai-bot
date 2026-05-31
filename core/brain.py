@@ -3,16 +3,28 @@ import logging
 from typing import List, Dict, Any, Optional
 from core.intelligence.factory import intelligence
 from core.personality import PERSONALITY
+from services.memory import memory_service
+from core.vision.factory import vision_provider
 
 logger = logging.getLogger(__name__)
 
 class JarvisBrain:
-    def __init__(self, model_name: str = "gemini-2.0-flash-exp"):
-        # Use the abstracted intelligence provider
-        self.provider = intelligence
+    def __init__(self):
+        self.intelligence = intelligence
+        self.vision = vision_provider
 
-    def process_user_message(self, system_instruction: str, user_message: str, context: str, history: List[Dict[str, str]] = None) -> Dict[str, Any]:
-        """Unified single-call architecture for VECTA processing."""
+    def process_user_message(self, system_instruction: str, user_message: str, context: str, history: List[Dict[str, str]] = None, user_id: str = "default_user") -> Dict[str, Any]:
+        """Unified single-call architecture for VECTA processing with semantic memory."""
+
+        # 1. Retrieve relevant memories
+        memories = memory_service.search(user_id, user_message)
+        memory_context = ""
+        if memories:
+            memory_context = "\nRELEVANT MEMORIES:\n" + "\n".join([f"- {m}" for m in memories])
+
+        # 2. Augment context
+        augmented_context = f"{context}{memory_context}"
+
         full_instruction = f"""{system_instruction}
 
 TASK:
@@ -39,11 +51,20 @@ Respond ONLY with a valid JSON object. No other text.
   "facts": {{}},
   "event": {{}}
 }}"""
-        return self.provider.generate_response(full_instruction, user_message, context, history)
+        result = self.intelligence.generate_response(full_instruction, user_message, augmented_context, history)
+
+        # 3. Store new facts into semantic memory if any were extracted
+        facts = result.get("facts", {})
+        if facts:
+            for field, value in facts.items():
+                fact_str = f"{field}: {value}"
+                memory_service.store(user_id, fact_str, {"type": "profile_fact", "field": field})
+
+        return result
 
     def analyze_screen_and_plan(self, screenshot_path: str, task: str, history: List[str]) -> str:
-        """Vision-based task planning for desktop control."""
-        return self.provider.analyze_screen_and_plan(screenshot_path, task, history)
+        """Vision-based task planning using the vision provider."""
+        return self.vision.analyze_image(screenshot_path, task, history)
 
 # Singleton instance for backward compatibility
 brain = JarvisBrain()
