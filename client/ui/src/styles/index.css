@@ -1,0 +1,16 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  background-color: #0a0a0a;
+  color: #00d4ff;
+}
+
+body {
+  margin: 0;
+  overflow: hidden;
+  background-color: #0a0a0a;
+  color: #00d4ff;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
