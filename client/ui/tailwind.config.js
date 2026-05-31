@@ -12,12 +12,13 @@ export default {
           alt: '#05070A',
         },
         'vecta-panel': {
-          DEFAULT: '#0B0F14',
-          alt: '#111827',
+          DEFAULT: 'rgba(11, 15, 20, 0.8)', // Glassy base
+          solid: '#0B0F14',
         },
         'vecta-cyan': {
           DEFAULT: '#00D1FF',
           accent: '#22D3EE',
+          dim: 'rgba(0, 209, 255, 0.2)',
         },
         'vecta-amber': '#F59E0B',
         'vecta-text': {
@@ -27,7 +28,11 @@ export default {
       },
       fontFamily: {
         sans: ['Inter', 'system-ui', 'sans-serif'],
+        mono: ['Fira Code', 'monospace'],
       },
+      backdropBlur: {
+        xs: '2px',
+      }
     },
   },
   plugins: [],

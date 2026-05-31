@@ -25,19 +25,19 @@ const ActivityFeed: React.FC = () => {
 
   return (
     <motion.div
-      initial={{ opacity: 0, x: 20 }}
-      animate={{ opacity: 1, x: 0 }}
-      className="w-80 h-full bg-vecta-panel border-l border-vecta-cyan/20 p-6 flex flex-col"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      className="w-80 h-full bg-vecta-panel backdrop-blur-xs border-l border-vecta-cyan/20 p-6 flex flex-col z-10"
     >
-      <h2 className="text-xs tracking-[0.3em] font-bold text-vecta-cyan uppercase mb-4">Activity Stream</h2>
+      <h2 className="text-xs tracking-[0.3em] font-bold text-vecta-cyan uppercase mb-4 drop-shadow-sm">Activity Stream</h2>
       <div
         ref={scrollRef}
-        className="flex-1 overflow-y-auto space-y-3 pr-2 scrollbar-thin scrollbar-thumb-vecta-cyan/20"
+        className="flex-1 overflow-y-auto space-y-4 pr-2 scrollbar-thin"
       >
         {logs.map(log => (
-          <div key={log.id} className="text-[11px] leading-relaxed">
-            <span className="text-vecta-cyan/40 font-mono mr-2">[{log.timestamp}]</span>
-            <span className="text-vecta-text-secondary">{log.message}</span>
+          <div key={log.id} className="text-[11px] leading-relaxed bg-black/30 p-2 border-l border-vecta-cyan/10">
+            <span className="text-vecta-cyan/60 font-mono mr-2 font-bold">[{log.timestamp}]</span>
+            <span className="text-vecta-text-primary/90 font-medium">{log.message}</span>
           </div>
         ))}
       </div>
