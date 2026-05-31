@@ -10,7 +10,10 @@ python-dotenv
 python-dateutil
 google-api-python-client
 google-auth
-twilio
 google-auth-oauthlib
 google-auth-httplib2
 dateparser==1.2.0
+chromadb
+playwright
+beautifulsoup4
+sentence-transformers
