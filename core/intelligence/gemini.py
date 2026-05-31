@@ -27,30 +27,11 @@ class GeminiIntelligence(BaseIntelligence):
         )
 
     def generate_response(self, system_instruction: str, user_message: str, context: str, history: List[Dict[str, str]] = None) -> Dict[str, Any]:
-        full_system_prompt = f"""{system_instruction}
-
-TASK:
-Analyze the user's message and current context. Perform intent classification, response generation, and data extraction in one step.
-
-AVAILABLE INTENTS:
-- GREETING, QUESTION, ADD_EVENT, CANCEL_EVENT, RECALL, TASK, CHAT.
-
-OUTPUT FORMAT:
-Respond ONLY with a valid JSON object.
-{{
-  "intent": "...",
-  "response": "...",
-  "facts": {{}},
-  "event": {{}}
-}}
-
-CONTEXT:
-{context}
-"""
+        """Generic response generation. Schema is dictated by system_instruction."""
         try:
             model_with_sys = genai.GenerativeModel(
                 model_name=self.model_name,
-                system_instruction=full_system_prompt
+                system_instruction=f"{system_instruction}\n\nCONTEXT:\n{context}"
             )
             chat = model_with_sys.start_chat(history=history or [])
             response = chat.send_message(user_message)

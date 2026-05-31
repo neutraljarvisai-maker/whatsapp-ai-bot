@@ -1,31 +1,30 @@
-# Local AI Readiness Report
+# Local AI Readiness Report (Update)
 
-## 1. Current Status: Partially Operational
+## 1. Overview
+VECTA is now architecturally ready for local-first operation. The intelligence layer is fully abstracted, and the Ollama provider is implemented and validated.
 
-VECTA can currently initialize and run using Ollama as the intelligence provider. However, several critical subsystems still rely on cloud APIs or lack local alternatives.
+## 2. What Works
+- **Model Switching**: Switching between Gemini and Ollama via `VECTA_LLM_PROVIDER` env var.
+- **Local Text Intelligence**: Full support for `qwen3:8b` via Ollama for chat, intent classification, and fact extraction.
+- **JSON Enforcement**: Robust handling of JSON responses from local models.
+- **Backend Routing**: `brain.py` successfully routes all intelligence requests through the provider abstraction.
 
-## 2. Readiness Matrix
+## 3. Blockers for Full Local Execution
+- **Vision Parity**: `qwen3:8b` does not support vision. Desktop control (screenshots) currently requires a cloud model or a secondary local multimodal model (e.g., `llava`).
+- **WhatsApp Integration**: `whatsapp_ai.py` still contains legacy hardcoded Groq/Gemini logic and needs refactoring to use the new factory.
+- **Hardware Resources**: Running 8B parameter models locally requires significant RAM/VRAM (~8GB) which may limit performance on lower-end devices.
 
-| Feature | Status | Blocker |
-|---------|--------|---------|
-| **Text Generation** | Ready | None (Ollama `qwen3:8b` supported) |
-| **JSON Extraction** | Ready | None (Ollama JSON mode used) |
-| **Vision Planning** | **Blocked** | `qwen3:8b` (standard) lacks vision; multimodal model needed. |
-| **WhatsApp Bot** | **Blocked** | `whatsapp_ai.py` still hardcoded to Groq/Gemini. |
-| **Memory/Retrieval** | Ready | SQL-based memory works locally. |
+## 4. Setup Instructions (for users with Ollama)
+1.  **Install Ollama**: Follow instructions at [ollama.com](https://ollama.com).
+2.  **Download Model**: Run `ollama pull qwen3:8b`.
+3.  **Configure VECTA**:
+    ```env
+    VECTA_LLM_PROVIDER=ollama
+    VECTA_OLLAMA_MODEL=qwen3:8b
+    OLLAMA_BASE_URL=http://localhost:11434
+    ```
+4.  **Launch**: Run `python desktop_backend.py`. The system will now use your local Ollama instance for all brain processing.
 
-## 3. Technical Blockers
-
-### 3.1 Hardcoded Cloud Dependencies in WhatsApp Logic
-`whatsapp_ai.py` does not yet use the `core/intelligence` factory. It still performs direct imports of `groq` and handles its own LLM calls. This prevents the WhatsApp bot from running locally.
-
-### 3.2 Vision Model Parity
-The `analyze_screen_and_plan` method in `OllamaIntelligence` is a stub. `qwen3:8b` is a text-only model. To achieve full local operation for desktop control, a multimodal local model (e.g., `llava` or `moondream`) must be integrated and configured in the factory.
-
-### 3.3 Hardware Constraints
-Running `qwen3:8b` requires ~8GB of VRAM/RAM. While the current environment has ~7.3GB available, performance may be degraded without GPU acceleration, affecting real-time responsiveness of the VECTA OS.
-
-## 4. Required Actions for Full Local Operation
-1.  **Refactor `whatsapp_ai.py`**: Migrate to the `JarvisBrain` or `intelligence` factory to unify the intelligence layer.
-2.  **Integrate Multimodal Local Model**: Add support for a vision-capable model in Ollama for the `analyze_screen_and_plan` capability.
-3.  **Model Switching for Vision**: Implement a "Vision Provider" distinct from the "Chat Provider" or allow the factory to handle multimodal transitions.
+## 5. Untested Areas
+- Performance under heavy load on consumer hardware.
+- Long-term stability of the local Ollama connection in a persistent OS environment.
