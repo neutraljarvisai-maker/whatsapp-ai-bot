@@ -7,7 +7,7 @@ import TopBar from './TopBar';
 import { useVectaState } from '../../hooks/useVectaState';
 
 const Shell: React.FC = () => {
-  const { state } = useVectaState();
+  const { state, addConsoleMessage } = useVectaState();
 
   return (
     <div className="fixed inset-0 bg-black text-vecta-text-primary font-sans flex flex-col overflow-hidden select-none">
@@ -19,7 +19,10 @@ const Shell: React.FC = () => {
         <ActivityFeed tasks={state.dailyTasks} />
       </div>
 
-      <CommandConsole state={state.aiCoreState} />
+      <CommandConsole
+        messages={state.consoleMessages}
+        onSendMessage={addConsoleMessage}
+      />
 
       {/* Cinematic HUD Overlays */}
       <div className="absolute inset-0 pointer-events-none z-[100] opacity-[0.02] bg-[linear-gradient(rgba(18,16,16,0)_50%,rgba(0,0,0,0.25)_50%)] bg-[size:100%_2px]" />

@@ -18,7 +18,7 @@ const ActivityFeed: React.FC<ActivityFeedProps> = ({ tasks }) => {
             key={task.id}
             className={`p-4 border border-vecta-cyan/10 transition-all duration-300 bg-black/20 ${
               task.status === 'completed' ? 'border-l-2 border-l-vecta-cyan' :
-              task.status === 'in-progress' ? 'border-l-2 border-l-vecta-amber' : ''
+              task.status === 'in-progress' ? 'border-l-2 border-l-vecta-amber' : 'border-l-2 border-l-white/5'
             }`}
           >
             <div className="flex items-center gap-3">
@@ -26,10 +26,11 @@ const ActivityFeed: React.FC<ActivityFeedProps> = ({ tasks }) => {
                 task.status === 'completed' ? 'bg-vecta-cyan/20' : ''
               }`}>
                 {task.status === 'completed' && <div className="w-1.5 h-1.5 bg-vecta-cyan rounded-full" />}
+                {task.status === 'in-progress' && <div className="w-1.5 h-1.5 bg-vecta-amber/40 animate-pulse rounded-full" />}
               </div>
               <div className="flex-1">
                 <div className={`text-[10px] font-black tracking-widest uppercase ${
-                  task.status === 'completed' ? 'text-vecta-text-secondary line-through' : 'text-vecta-text-primary'
+                  task.status === 'completed' ? 'text-vecta-text-secondary line-through opacity-60' : 'text-vecta-text-primary'
                 }`}>
                   {task.name}
                 </div>

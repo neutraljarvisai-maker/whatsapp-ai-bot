@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 
 export type AICoreState = 'idle' | 'listening' | 'thinking' | 'speaking';
 
@@ -17,18 +17,26 @@ export interface Task {
   status: 'pending' | 'in-progress' | 'completed';
 }
 
+export interface Message {
+  id: string;
+  sender: 'user' | 'vecta';
+  text: string;
+  timestamp: Date;
+}
+
 export interface VectaState {
   systemStats: SystemStats;
   aiCoreState: AICoreState;
   dailyTasks: Task[];
   systemTime: Date;
+  consoleMessages: Message[];
 }
 
 export const useVectaState = () => {
   const [state, setState] = useState<VectaState>({
     systemStats: {
-      cpu: 12,
-      gpu: 8,
+      cpu: 13.0,
+      gpu: 7.4,
       ram: 4.2,
       network: '128 MBPS',
       vision: true,
@@ -42,6 +50,14 @@ export const useVectaState = () => {
       { id: '4', name: 'Neural Link Calibration', status: 'pending' },
     ],
     systemTime: new Date(),
+    consoleMessages: [
+      {
+        id: '0',
+        sender: 'vecta',
+        text: 'All tactical systems are operational. I am ready to process your next directive, Master Bruce.',
+        timestamp: new Date(),
+      }
+    ],
   });
 
   useEffect(() => {
@@ -49,20 +65,52 @@ export const useVectaState = () => {
       setState(prev => ({
         ...prev,
         systemTime: new Date(),
-        // Simulate minor fluctuations
         systemStats: {
           ...prev.systemStats,
-          cpu: Math.max(5, Math.min(95, prev.systemStats.cpu + (Math.random() - 0.5) * 2)),
-          gpu: Math.max(2, Math.min(98, prev.systemStats.gpu + (Math.random() - 0.5) * 1)),
+          cpu: Math.max(8, Math.min(95, prev.systemStats.cpu + (Math.random() - 0.5) * 1.2)),
+          gpu: Math.max(4, Math.min(98, prev.systemStats.gpu + (Math.random() - 0.5) * 0.8)),
         }
       }));
-    }, 1000);
+    }, 2000);
     return () => clearInterval(timer);
   }, []);
 
-  const setAICoreState = (newState: AICoreState) => {
+  const setAICoreState = useCallback((newState: AICoreState) => {
     setState(prev => ({ ...prev, aiCoreState: newState }));
-  };
+  }, []);
 
-  return { state, setAICoreState };
+  const addConsoleMessage = useCallback((text: string) => {
+    const userMessage: Message = {
+      id: Date.now().toString(),
+      sender: 'user',
+      text,
+      timestamp: new Date(),
+    };
+
+    // Add user message immediately
+    setState(prev => ({
+      ...prev,
+      consoleMessages: [...prev.consoleMessages, userMessage],
+    }));
+
+    // Trigger AI response flow
+    setAICoreState('thinking');
+
+    setTimeout(() => {
+      const response: Message = {
+        id: (Date.now() + 1).toString(),
+        sender: 'vecta',
+        text: `Processing directive: "${text}". Neural uplink verified. Command accepted.`,
+        timestamp: new Date(),
+      };
+
+      setState(prev => ({
+        ...prev,
+        aiCoreState: 'idle',
+        consoleMessages: [...prev.consoleMessages, response],
+      }));
+    }, 1200);
+  }, [setAICoreState]);
+
+  return { state, setAICoreState, addConsoleMessage };
 };
